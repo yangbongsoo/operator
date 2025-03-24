@@ -14,6 +14,7 @@ import (
 	miniov2 "github.com/minio/operator/pkg/apis/minio.min.io/v2"
 )
 
+// NodePodStatus represents the status of a node and the pod running on it.
 type NodePodStatus struct {
 	Node       string `json:"node" yaml:"node"`
 	Pod        string `json:"pod" yaml:"pod"`
@@ -21,18 +22,25 @@ type NodePodStatus struct {
 	PodStatus  string `json:"podStatus" yaml:"podStatus"`
 }
 
-type IDCNodePodMap map[string][]NodePodStatus // idc1, idc2, idc3 -> NodePodStatus 목록
+// IDCNodePodMap maps IDC zones to a list of NodePodStatus.
+// Format: idc1, idc2, idc3 -> NodePodStatus list
+type IDCNodePodMap map[string][]NodePodStatus
 
 const (
+	// IDCNodePodMapName is the name of the ConfigMap that stores the IDC-Node-Pod mapping information.
 	IDCNodePodMapName = "idc-node-pod-map"
-	IDCNodePodMapKey  = "map.yaml"
+	// IDCNodePodMapKey is the key used in the ConfigMap to store the mapping data.
+	IDCNodePodMapKey = "map.yaml"
+	// TopologyZoneLabel is the label used to identify the IDC zone of a node.
 	TopologyZoneLabel = "topology.kubernetes.io/zone"
-	AppLabel          = "app"
-	MinIOAppName      = "minio"
+	// AppLabel is the label used to identify the application type.
+	AppLabel = "app"
+	// MinIOAppName is the value of the app label for MinIO pods.
+	MinIOAppName = "minio"
 )
 
-// GetNodePodMapConfigMap은 현재 idc-node-pod-map ConfigMap을 조회합니다.
-// 존재하지 않는 경우 nil과 에러를 반환합니다.
+// GetNodePodMapConfigMap retrieves the current idc-node-pod-map ConfigMap.
+// Returns nil and error if the ConfigMap does not exist.
 func (c *Controller) GetNodePodMapConfigMap(ctx context.Context, namespace string) (*corev1.ConfigMap, error) {
 	configMap, err := c.kubeClientSet.CoreV1().ConfigMaps(namespace).Get(ctx, IDCNodePodMapName, metav1.GetOptions{})
 	if err != nil {
@@ -46,16 +54,16 @@ func (c *Controller) GetNodePodMapConfigMap(ctx context.Context, namespace strin
 	return configMap, nil
 }
 
-// CreateNodePodMapConfigMap은 새로운 idc-node-pod-map ConfigMap을 생성합니다.
+// CreateNodePodMapConfigMap creates a new idc-node-pod-map ConfigMap.
 func (c *Controller) CreateNodePodMapConfigMap(ctx context.Context, namespace string, idcMap IDCNodePodMap) error {
-	// IDCNodePodMap을 YAML로 마샬링
+	// Marshal IDCNodePodMap to YAML
 	yamlData, err := yaml.Marshal(idcMap)
 	if err != nil {
 		klog.Errorf("[YBS] Failed to marshal IDCNodePodMap: %v", err)
 		return err
 	}
 
-	// ConfigMap 객체 생성
+	// Create ConfigMap object
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      IDCNodePodMapName,
@@ -66,7 +74,7 @@ func (c *Controller) CreateNodePodMapConfigMap(ctx context.Context, namespace st
 		},
 	}
 
-	// Kubernetes API를 통해 ConfigMap 생성
+	// Create ConfigMap via Kubernetes API
 	_, err = c.kubeClientSet.CoreV1().ConfigMaps(namespace).Create(ctx, configMap, metav1.CreateOptions{})
 	if err != nil {
 		klog.Errorf("[YBS] Failed to create ConfigMap %s/%s: %v", namespace, IDCNodePodMapName, err)
@@ -77,28 +85,28 @@ func (c *Controller) CreateNodePodMapConfigMap(ctx context.Context, namespace st
 	return nil
 }
 
-// UpsertNodePodMapConfigMap은 기존 idc-node-pod-map ConfigMap을 업데이트합니다.
-// ConfigMap이 존재하지 않는 경우 생성합니다.
+// UpsertNodePodMapConfigMap updates an existing idc-node-pod-map ConfigMap.
+// Creates the ConfigMap if it does not exist.
 func (c *Controller) UpsertNodePodMapConfigMap(ctx context.Context, namespace string, idcMap IDCNodePodMap) error {
-	// 기존 ConfigMap 조회
+	// Get existing ConfigMap
 	existingConfigMap, err := c.GetNodePodMapConfigMap(ctx, namespace)
 	if err != nil {
 		return err
 	}
 
-	// IDCNodePodMap을 YAML로 마샬링
+	// Marshal IDCNodePodMap to YAML
 	yamlData, err := yaml.Marshal(idcMap)
 	if err != nil {
 		klog.Errorf("[YBS] Failed to marshal IDCNodePodMap: %v", err)
 		return err
 	}
 
-	// ConfigMap이 존재하지 않는 경우 생성
+	// Create ConfigMap if it doesn't exist
 	if existingConfigMap == nil {
 		return c.CreateNodePodMapConfigMap(ctx, namespace, idcMap)
 	}
 
-	// 기존 ConfigMap 업데이트
+	// Update existing ConfigMap
 	updatedConfigMap := existingConfigMap.DeepCopy()
 	if updatedConfigMap.Data == nil {
 		updatedConfigMap.Data = make(map[string]string)
@@ -115,14 +123,14 @@ func (c *Controller) UpsertNodePodMapConfigMap(ctx context.Context, namespace st
 	return nil
 }
 
-// CollectIDCNodePodInfo는 각 IDC 영역별 노드와 MinIO 파드 정보를 수집합니다.
-// topology.kubernetes.io/zone 레이블을 기반으로 IDC 영역을 식별하고,
-// 각 노드에서 실행 중인 MinIO 파드 정보를 매핑합니다.
+// CollectIDCNodePodInfo collects node and MinIO pod information for each IDC zone.
+// It identifies IDC zones based on the topology.kubernetes.io/zone label and
+// maps MinIO pods running on each node.
 func (c *Controller) CollectIDCNodePodInfo(ctx context.Context, tenant *miniov2.Tenant) (IDCNodePodMap, error) {
-	// 결과를 저장할 맵 초기화
+	// Initialize map to store results
 	idcNodePodMap := make(IDCNodePodMap)
 
-	// 모든 IDC 영역 목록 수집
+	// Collect all IDC zones
 	idcMap := make(map[string]bool)
 	nodeList, err := c.kubeClientSet.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -130,7 +138,7 @@ func (c *Controller) CollectIDCNodePodInfo(ctx context.Context, tenant *miniov2.
 		return nil, err
 	}
 
-	// nodeList 로그 출력
+	// Log node list
 	klog.V(3).Infof("[YBS] Collected %d nodes in cluster", len(nodeList.Items))
 	for i, node := range nodeList.Items {
 		if i < 5 { // 처음 5개 노드만 자세히 출력
@@ -139,21 +147,21 @@ func (c *Controller) CollectIDCNodePodInfo(ctx context.Context, tenant *miniov2.
 		}
 	}
 
-	// 모든 노드를 순회하며 IDC 영역 목록 추출
+	// Extract IDC zone list by iterating through all nodes
 	for _, node := range nodeList.Items {
 		if idc, ok := node.Labels[TopologyZoneLabel]; ok {
 			idcMap[idc] = true
 		}
 	}
 
-	// 수집된 IDC 영역 로그 출력
+	// Log collected IDC zones
 	klog.V(3).Infof("[YBS] Collected idcMap: %#v", idcMap)
 
-	// MinIO 파드 목록 조회
+	// Get MinIO pod list
 	tenantNamespace := tenant.Namespace
 	tenantName := tenant.Name
 
-	// MinIO 파드를 식별하기 위한 레이블 셀렉터
+	// Label selector to identify MinIO pods
 	labelSelector := labels.SelectorFromSet(map[string]string{
 		miniov2.TenantLabel: tenantName,
 		AppLabel:            MinIOAppName,
@@ -169,7 +177,7 @@ func (c *Controller) CollectIDCNodePodInfo(ctx context.Context, tenant *miniov2.
 		return nil, err
 	}
 
-	// podList 로그 출력
+	// Log pod list
 	klog.V(3).Infof("[YBS] Found %d MinIO pods for tenant %s/%s", len(podList.Items), tenantNamespace, tenantName)
 	for i, pod := range podList.Items {
 		podStatus := "Unknown"
@@ -184,14 +192,14 @@ func (c *Controller) CollectIDCNodePodInfo(ctx context.Context, tenant *miniov2.
 			}
 		}
 
-		// 각 파드에 대한 자세한 정보 출력
+		// Log detailed information for each pod
 		klog.V(4).Infof("[YBS] Pod %d: Name=%s, Node=%s, Phase=%s, Status=%s",
 			i, pod.Name, pod.Spec.NodeName, pod.Status.Phase, podStatus)
 	}
 
-	// 각 IDC 영역별로 노드와 파드 정보 수집
+	// Collect node and pod information for each IDC zone
 	for idc := range idcMap {
-		// IDC 영역에 해당하는 노드 목록 조회
+		// Get nodes in this IDC zone
 		zoneSelector := labels.SelectorFromSet(map[string]string{
 			TopologyZoneLabel: idc,
 		}).String()
@@ -201,16 +209,16 @@ func (c *Controller) CollectIDCNodePodInfo(ctx context.Context, tenant *miniov2.
 		})
 		if err != nil {
 			klog.Errorf("[YBS] Failed to list nodes for idc %s: %v", idc, err)
-			continue // 한 영역에서 오류가 발생해도 다른 영역은 계속 처리
+			continue // Continue with other zones if there's an error in one
 		}
 
 		klog.V(3).Infof("[YBS] Found %d nodes in idc %s", len(idcNodeList.Items), idc)
 
-		// 해당 IDC 영역의 노드들을 순회
+		// Iterate through nodes in this IDC zone
 		for _, node := range idcNodeList.Items {
 			nodeName := node.Name
 
-			// 노드 상태 확인 (Ready/NotReady)
+			// Check node status (Ready/NotReady)
 			nodeStatus := "offline"
 			for _, condition := range node.Status.Conditions {
 				if condition.Type == corev1.NodeReady {
@@ -221,19 +229,19 @@ func (c *Controller) CollectIDCNodePodInfo(ctx context.Context, tenant *miniov2.
 				}
 			}
 
-			// 이 노드에서 실행 중인 MinIO 파드 찾기
+			// Find MinIO pod running on this node
 			var nodePodStatus NodePodStatus
 			nodePodStatus.Node = nodeName
 			nodePodStatus.NodeStatus = nodeStatus
-			nodePodStatus.Pod = ""               // 기본값
-			nodePodStatus.PodStatus = "NotFound" // 기본값
+			nodePodStatus.Pod = ""               // Default value
+			nodePodStatus.PodStatus = "NotFound" // Default value
 
 			for _, pod := range podList.Items {
 				if pod.Spec.NodeName == nodeName {
 					nodePodStatus.Pod = pod.Name
 					nodePodStatus.PodStatus = string(pod.Status.Phase)
 
-					// 파드가 Running 상태인 경우 더 정확한 상태 확인
+					// More accurate status check for Running pods
 					if pod.Status.Phase == corev1.PodRunning {
 						ready := true
 						for _, condition := range pod.Status.Conditions {
@@ -253,7 +261,7 @@ func (c *Controller) CollectIDCNodePodInfo(ctx context.Context, tenant *miniov2.
 				}
 			}
 
-			// 결과 맵에 추가
+			// Add to result map
 			if _, exists := idcNodePodMap[idc]; !exists {
 				idcNodePodMap[idc] = []NodePodStatus{}
 			}
@@ -261,7 +269,7 @@ func (c *Controller) CollectIDCNodePodInfo(ctx context.Context, tenant *miniov2.
 		}
 	}
 
-	// 최종 수집된 매핑 정보 로그 출력
+	// Log final mapping information
 	for idc, nodePodStatuses := range idcNodePodMap {
 		klog.V(3).Infof("[YBS] IDC %s has %#v node-pod mappings\n", idc, nodePodStatuses)
 	}
@@ -269,13 +277,12 @@ func (c *Controller) CollectIDCNodePodInfo(ctx context.Context, tenant *miniov2.
 	return idcNodePodMap, nil
 }
 
-// ReconcileNodePodMap은 주어진 테넌트의 IDC-Node-Pod 매핑 정보를 수집하고 ConfigMap을 업데이트합니다.
-// 이 함수는 컨트롤러의 Reconcile 루프에서 호출되어야 합니다.
+// ReconcileNodePodMap collects IDC-Node-Pod mapping information for the given tenant and updates the ConfigMap.
+// This function should be called from the controller's Reconcile loop.
 func (c *Controller) ReconcileNodePodMap(ctx context.Context, tenant *miniov2.Tenant) error {
 	klog.V(2).Infof("[YBS] Reconciling IDC-Node-Pod map for tenant %s/%s", tenant.Namespace, tenant.Name)
 
-	// 테넌트 상태에 관계없이 IDC-Node-Pod 정보를 수집합니다
-	// IDC-Node-Pod 정보 수집
+	// Collect IDC-Node-Pod information regardless of tenant state
 	idcNodePodMap, err := c.CollectIDCNodePodInfo(ctx, tenant)
 	if err != nil {
 		klog.Errorf("[YBS] Failed to collect IDC-Node-Pod information for tenant %s/%s: %v",
@@ -283,16 +290,16 @@ func (c *Controller) ReconcileNodePodMap(ctx context.Context, tenant *miniov2.Te
 		return err
 	}
 
-	// 수집된 정보가 없으면 기존 ConfigMap을 유지하고 처리를 중단합니다.
-	// 빈 맵으로 ConfigMap을 업데이트하면 의미 없는 데이터가 저장되므로,
-	// 정보가 없는 경우에는 현재 상태를 유지하는 것이 더 안전합니다.
+	// If no information is collected, keep the existing ConfigMap and stop processing
+	// Updating the ConfigMap with an empty map would store meaningless data,
+	// so it's safer to keep the current state when no information is available
 	if len(idcNodePodMap) == 0 {
 		klog.Warningf("[YBS] No IDC-Node-Pod information collected for tenant %s/%s. Keeping existing ConfigMap if any.",
 			tenant.Namespace, tenant.Name)
 		return nil
 	}
 
-	// ConfigMap 업데이트
+	// Update ConfigMap
 	err = c.UpsertNodePodMapConfigMap(ctx, tenant.Namespace, idcNodePodMap)
 	if err != nil {
 		klog.Errorf("[YBS] Failed to update IDC-Node-Pod ConfigMap for tenant %s/%s: %v",

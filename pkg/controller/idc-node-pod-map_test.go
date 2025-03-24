@@ -100,7 +100,7 @@ func TestUpsertNodePodMapConfigMap(t *testing.T) {
 		newMap      IDCNodePodMap
 	}{
 		{
-			name:        "ConfigMap이 존재하지 않을 때 생성",
+			name:        "Create ConfigMap when it does not exist",
 			existingMap: nil,
 			newMap: IDCNodePodMap{
 				"idc1": []NodePodStatus{
@@ -114,7 +114,7 @@ func TestUpsertNodePodMapConfigMap(t *testing.T) {
 			},
 		},
 		{
-			name: "기존 ConfigMap 업데이트",
+			name: "Update existing ConfigMap",
 			existingMap: IDCNodePodMap{
 				"idc1": []NodePodStatus{
 					{
@@ -199,7 +199,7 @@ func TestCollectIDCNodePodInfo(t *testing.T) {
 		},
 	}
 
-	// 테스트 노드 생성
+	// Create test nodes
 	nodes := []corev1.Node{
 		{
 			ObjectMeta: metav1.ObjectMeta{
@@ -251,7 +251,7 @@ func TestCollectIDCNodePodInfo(t *testing.T) {
 		},
 	}
 
-	// 테스트 파드 생성
+	// Create test pods
 	pods := []corev1.Pod{
 		{
 			ObjectMeta: metav1.ObjectMeta{
@@ -299,10 +299,10 @@ func TestCollectIDCNodePodInfo(t *testing.T) {
 		},
 	}
 
-	// 가짜 Kubernetes 클라이언트 생성
+	// Create fake Kubernetes client
 	fakeClient := fake.NewSimpleClientset()
 
-	// 노드와 파드 추가
+	// Add nodes and pods
 	for _, node := range nodes {
 		_, err := fakeClient.CoreV1().Nodes().Create(ctx, &node, metav1.CreateOptions{})
 		assert.NoError(t, err)
@@ -313,24 +313,24 @@ func TestCollectIDCNodePodInfo(t *testing.T) {
 		assert.NoError(t, err)
 	}
 
-	// 테스트를 위한 컨트롤러 생성
+	// Create controller for testing
 	controller := &Controller{
 		kubeClientSet: fakeClient,
 	}
 
-	// CollectIDCNodePodInfo 테스트
+	// Test CollectIDCNodePodInfo
 	idcNodePodMap, err := controller.CollectIDCNodePodInfo(ctx, tenant)
 	assert.NoError(t, err)
 	assert.NotNil(t, idcNodePodMap)
 
-	// 결과 확인
+	// Verify results
 	assert.Contains(t, idcNodePodMap, "idc1")
 	assert.Contains(t, idcNodePodMap, "idc2")
 
 	assert.Len(t, idcNodePodMap["idc1"], 2)
 	assert.Len(t, idcNodePodMap["idc2"], 1)
 
-	// idc1의 첫 번째 노드 검증 (node1)
+	// Verify node1 in idc1
 	node1Found := false
 	for _, nodePodStatus := range idcNodePodMap["idc1"] {
 		if nodePodStatus.Node == "node1" {
@@ -341,9 +341,9 @@ func TestCollectIDCNodePodInfo(t *testing.T) {
 			break
 		}
 	}
-	assert.True(t, node1Found, "node1 정보를 찾음")
+	assert.True(t, node1Found, "Should find node1 information")
 
-	// idc1의 두 번째 노드 검증 (node2)
+	// Verify node2 in idc1
 	node2Found := false
 	for _, nodePodStatus := range idcNodePodMap["idc1"] {
 		if nodePodStatus.Node == "node2" {
@@ -354,9 +354,9 @@ func TestCollectIDCNodePodInfo(t *testing.T) {
 			break
 		}
 	}
-	assert.True(t, node2Found, "node2 정보를 찾음")
+	assert.True(t, node2Found, "Should find node2 information")
 
-	// zone2의 노드 검증 (node3)
+	// Verify node3 in idc2
 	assert.Equal(t, "node3", idcNodePodMap["idc2"][0].Node)
 	assert.Equal(t, "online", idcNodePodMap["idc2"][0].NodeStatus)
 	assert.Equal(t, "minio-pod-3", idcNodePodMap["idc2"][0].Pod)
@@ -373,13 +373,13 @@ func TestReconcileNodePodMap(t *testing.T) {
 		expectSuccess bool
 	}{
 		{
-			name:          "정상 테넌트",
+			name:          "Healthy tenant",
 			tenantState:   "Initialized",
 			healthStatus:  miniov2.HealthStatusGreen,
 			expectSuccess: true,
 		},
 		{
-			name:          "초기화되지 않은 테넌트",
+			name:          "Not initialized tenant",
 			tenantState:   "NotInitialized",
 			healthStatus:  miniov2.HealthStatusRed,
 			expectSuccess: false,
@@ -439,51 +439,51 @@ func TestReconcileNodePodMap(t *testing.T) {
 				},
 			}
 
-			// 가짜 Kubernetes 클라이언트 생성
+			// Create fake Kubernetes client
 			fakeClient := fake.NewSimpleClientset()
 
-			// 노드와 파드 추가
+			// Add nodes and pods
 			_, err := fakeClient.CoreV1().Nodes().Create(ctx, &node, metav1.CreateOptions{})
 			assert.NoError(t, err)
 
 			_, err = fakeClient.CoreV1().Pods(tenant.Namespace).Create(ctx, &pod, metav1.CreateOptions{})
 			assert.NoError(t, err)
 
-			// 테스트를 위한 컨트롤러 생성
+			// Create controller for testing
 			controller := &Controller{
 				kubeClientSet: fakeClient,
 			}
 
-			// ReconcileNodePodMap 테스트
+			// Test ReconcileNodePodMap
 			err = controller.ReconcileNodePodMap(ctx, tenant)
 
 			if tc.expectSuccess {
 				assert.NoError(t, err)
 
-				// ConfigMap이 생성되었는지 확인
+				// Verify ConfigMap was created
 				configMap, err := fakeClient.CoreV1().ConfigMaps(tenant.Namespace).Get(ctx, IDCNodePodMapName, metav1.GetOptions{})
 				assert.NoError(t, err)
 				assert.NotNil(t, configMap)
 
-				// ConfigMap 데이터 확인
+				// Verify ConfigMap data
 				var retrievedMap IDCNodePodMap
 				err = yaml.Unmarshal([]byte(configMap.Data[IDCNodePodMapKey]), &retrievedMap)
 				assert.NoError(t, err)
 				assert.Contains(t, retrievedMap, "idc1")
 			} else {
-				// 초기화되지 않은 테넌트는 조기 반환되어 ConfigMap이 생성되지 않음
-				assert.NoError(t, err) // 에러는 없지만 작업이 수행되지 않음
+				// Not initialized tenant should return early without ConfigMap creation
+				assert.NoError(t, err) // No error, but no operation performed
 
-				// ConfigMap이 생성되지 않았는지 확인
+				// Verify ConfigMap was not created
 				_, err := fakeClient.CoreV1().ConfigMaps(tenant.Namespace).Get(ctx, IDCNodePodMapName, metav1.GetOptions{})
-				assert.Error(t, err) // ConfigMap을 찾을 수 없어야 함
+				assert.Error(t, err) // Should not find ConfigMap
 			}
 		})
 	}
 }
 
 func TestEmptyIDCNodePodMap(t *testing.T) {
-	// 테스트 컨텍스트
+	// Test context
 	ctx := context.Background()
 	tenant := &miniov2.Tenant{
 		ObjectMeta: metav1.ObjectMeta{
@@ -496,16 +496,16 @@ func TestEmptyIDCNodePodMap(t *testing.T) {
 		},
 	}
 
-	// 가짜 Kubernetes 클라이언트 생성
-	// 노드나 파드를 추가하지 않아 빈 맵이 반환됨
+	// Create fake Kubernetes client
+	// No nodes or pods added to return empty map
 	fakeClient := fake.NewSimpleClientset()
 
-	// 테스트를 위한 컨트롤러 생성
+	// Create controller for testing
 	controller := &Controller{
 		kubeClientSet: fakeClient,
 	}
 
-	// 기존 ConfigMap 생성
+	// Create existing ConfigMap
 	testMap := IDCNodePodMap{
 		"idc1": []NodePodStatus{
 			{
@@ -529,11 +529,11 @@ func TestEmptyIDCNodePodMap(t *testing.T) {
 	_, err := fakeClient.CoreV1().ConfigMaps(tenant.Namespace).Create(ctx, existingConfigMap, metav1.CreateOptions{})
 	assert.NoError(t, err)
 
-	// ReconcileNodePodMap 테스트
+	// Test ReconcileNodePodMap
 	err = controller.ReconcileNodePodMap(ctx, tenant)
 	assert.NoError(t, err)
 
-	// 기존 ConfigMap이 그대로 유지되는지 확인
+	// Verify existing ConfigMap is maintained
 	configMap, err := fakeClient.CoreV1().ConfigMaps(tenant.Namespace).Get(ctx, IDCNodePodMapName, metav1.GetOptions{})
 	assert.NoError(t, err)
 	assert.NotNil(t, configMap)
