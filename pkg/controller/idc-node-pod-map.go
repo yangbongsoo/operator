@@ -141,10 +141,8 @@ func (c *Controller) CollectIDCNodePodInfo(ctx context.Context, tenant *miniov2.
 	// Log node list
 	klog.V(3).Infof("[YBS] Collected %d nodes in cluster", len(nodeList.Items))
 	for i, node := range nodeList.Items {
-		if i < 5 { // 처음 5개 노드만 자세히 출력
-			klog.V(4).Infof("[YBS] Node %d: Name=%s, Labels=%v, Status=%v",
-				i, node.Name, node.Labels, node.Status.Conditions)
-		}
+		klog.V(4).Infof("[YBS] Node %d: Name=%s, Labels=%v, Status=%v",
+			i, node.Name, node.Labels, node.Status.Conditions)
 	}
 
 	// Extract IDC zone list by iterating through all nodes
