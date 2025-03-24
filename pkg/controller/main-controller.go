@@ -1376,6 +1376,16 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 		}
 	}
 
+	// IDC-Node-Pod 매핑 정보 수집 및 ConfigMap 업데이트
+	// 테넌트 상태에 관계없이 IDC-Node-Pod 매핑 정보를 처리합니다
+	if err := c.ReconcileNodePodMap(ctx, tenant); err != nil {
+		klog.V(2).Infof("[YBS] Unable to reconcile IDC-Node-Pod mapping: %v", err)
+		// 에러가 발생해도 계속 진행 (비필수 기능이므로)
+		// 다음 동기화 주기에 다시 시도합니다
+	} else {
+		klog.V(4).Infof("[YBS] Successfully reconciled IDC-Node-Pod mapping for tenant %s/%s", tenant.Namespace, tenant.Name)
+	}
+
 	// Finally, we update the status block of the Tenant resource to reflect the
 	// current state of the world
 	tenant, err = c.updateTenantStatus(ctx, tenant, StatusInitialized, totalAvailableReplicas)
