@@ -5,9 +5,9 @@ else
 VERSION ?= $(shell git describe --tags)
 VERSIONV ?= $(shell git describe --tags | sed 's,v,,g')
 endif
-TAG ?= "minio/operator:$(VERSION)"
+TAG = "minio/operator:v7.0.1-ybs"
 SHA ?= $(shell git rev-parse --short HEAD)
-LDFLAGS ?= "-s -w -X github.com/minio/operator/pkg.ReleaseTag=$(VERSIONV) -X github.com/minio/operator/pkg.Version=$(VERSION) -X github.com/minio/operator/pkg.ShortCommitID=$(SHA)"
+LDFLAGS = "-s -w -X github.com/minio/operator/pkg.ReleaseTag=7.0.1-ybs -X github.com/minio/operator/pkg.Version=v7.0.1-ybs -X github.com/minio/operator/pkg.ShortCommitID=$(SHA)"
 GOPATH := $(shell go env GOPATH)
 GOARCH := $(shell go env GOARCH)
 GOOS := $(shell go env GOOS)
@@ -92,4 +92,3 @@ release: update-versions generate-code regen-crd regen-crd-docs
 apply-gofmt:
 	@echo "Applying gofmt to all generated an existing files"
 	@GO111MODULE=on gofmt -w .
-
