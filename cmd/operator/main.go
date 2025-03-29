@@ -16,19 +16,19 @@ package main
 
 import (
 	"context"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"time"
 
-	"github.com/minio/operator/pkg"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/minio/cli"
+	"github.com/minio/operator/pkg"
 	topologyv1alpha1 "github.com/minio/operator/pkg/apis/topology.xai/v1alpha1"
 	"github.com/minio/pkg/console"
 	"github.com/minio/pkg/trie"
@@ -153,6 +153,7 @@ func main() {
 		os.Exit(1)
 	}
 }
+
 func createIDCTopology(clientset *kubernetes.Clientset) {
 	newIDCTopology := &topologyv1alpha1.IDCTopology{
 		TypeMeta: metav1.TypeMeta{
