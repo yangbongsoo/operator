@@ -22,6 +22,11 @@ import (
 	"sort"
 	"time"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -139,13 +144,26 @@ func main() {
 	if err != nil {
 		log.Fatalf("[YBS] Failed to create clientset: %v", err)
 	}
-	createIDCTopology(clientset)
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		log.Fatalf("[YBS] Failed to create dynamic client: %v", err)
+	}
+	_, err = dynamicClient.Resource(schema.GroupVersionResource{
+		Group:    "topology.xai",
+		Version:  "v1alpha1",
+		Resource: "idctopologies",
+	}).Namespace("default").Get(context.TODO(), "minio-topology", metav1.GetOptions{})
+	if err != nil {
+		createIDCTopology(clientset, dynamicClient)
+	} else {
+		log.Println("[YBS] IDCTopology minio-topology already exists, skipping creation")
+	}
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			log.Printf("[YBS] updateIDCTopology")
-			updateIDCTopology(clientset)
+			updateIDCTopology(clientset, dynamicClient)
 		}
 	}()
 	// Run the app - exit on error.
@@ -154,7 +172,7 @@ func main() {
 	}
 }
 
-func createIDCTopology(clientset *kubernetes.Clientset) {
+func createIDCTopology(clientset *kubernetes.Clientset, dynamicClient dynamic.Interface) {
 	newIDCTopology := &topologyv1alpha1.IDCTopology{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "IDCTopology",
@@ -165,14 +183,19 @@ func createIDCTopology(clientset *kubernetes.Clientset) {
 			Namespace: "default",
 		},
 	}
-
 	newIDCTopology.Spec = initialIDCTopologySpec(clientset)
-	_, err := clientset.RESTClient().
-		Post().
-		AbsPath("/apis/topology.xai/v1alpha1/namespaces/default/idctopologies").
-		Body(newIDCTopology).
-		Do(context.TODO()).
-		Get()
+
+	idcTopologyRes := schema.GroupVersionResource{
+		Group:    "topology.xai",
+		Version:  "v1alpha1",
+		Resource: "idctopologies",
+	}
+	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(newIDCTopology)
+	if err != nil {
+		log.Printf("[YBS] Failed to convert to unstructured: %v", err)
+		return
+	}
+	_, err = dynamicClient.Resource(idcTopologyRes).Namespace("default").Create(context.TODO(), &unstructured.Unstructured{Object: unstructuredObj}, metav1.CreateOptions{})
 	if err != nil {
 		log.Printf("[YBS] Failed to create IDCTopology: %v", err)
 	} else {
@@ -180,25 +203,31 @@ func createIDCTopology(clientset *kubernetes.Clientset) {
 	}
 }
 
-func updateIDCTopology(clientset *kubernetes.Clientset) {
-	idcTopology, err := clientset.RESTClient().
-		Get().
-		AbsPath("/apis/topology.xai/v1alpha1/namespaces/default/idctopologies/minio-topology").
-		Do(context.TODO()).
-		Get()
+func updateIDCTopology(clientset *kubernetes.Clientset, dynamicClient dynamic.Interface) {
+	idcTopologyRes := schema.GroupVersionResource{
+		Group:    "topology.xai",
+		Version:  "v1alpha1",
+		Resource: "idctopologies",
+	}
+	idcTopology, err := dynamicClient.Resource(idcTopologyRes).Namespace("default").Get(context.TODO(), "minio-topology", metav1.GetOptions{})
 	if err != nil {
 		log.Printf("[YBS] Failed to get IDCTopology for update: %v", err)
 		return
 	}
 
-	newIDCTopology := idcTopology.(*topologyv1alpha1.IDCTopology)
+	newIDCTopology := &topologyv1alpha1.IDCTopology{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(idcTopology.UnstructuredContent(), newIDCTopology); err != nil {
+		log.Printf("[YBS] Failed to convert from unstructured: %v", err)
+		return
+	}
 	newIDCTopology.Spec = initialIDCTopologySpec(clientset)
-	_, err = clientset.RESTClient().
-		Put().
-		AbsPath("/apis/topology.xai/v1alpha1/namespaces/default/idctopologies/minio-topology").
-		Body(newIDCTopology).
-		Do(context.TODO()).
-		Get()
+
+	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(newIDCTopology)
+	if err != nil {
+		log.Printf("[YBS] Failed to convert to unstructured: %v", err)
+		return
+	}
+	_, err = dynamicClient.Resource(idcTopologyRes).Namespace("default").Update(context.TODO(), &unstructured.Unstructured{Object: unstructuredObj}, metav1.UpdateOptions{})
 	if err != nil {
 		log.Printf("[YBS] Failed to update IDCTopology: %v", err)
 	} else {
@@ -233,9 +262,11 @@ func initialIDCTopologySpec(clientset *kubernetes.Clientset) topologyv1alpha1.ID
 			}
 			podInfo := findPodForNode(clientset, nodeName)
 			if podInfo.Name == "" {
-				log.Printf("[YBS] Failed to get podInfo: %v", err)
+				log.Printf("[YBS] podInfo.Name is empty")
 				continue
 			}
+			log.Printf("[YBS] podInfo.Name: %s", podInfo.Name)
+			log.Printf("[YBS] podInfo.Status: %v", podInfo.Status.Phase)
 			idcEntry.Nodes = append(idcEntry.Nodes, topologyv1alpha1.Node{
 				Node:       nodeName,
 				Pod:        podInfo.Name,
@@ -267,12 +298,14 @@ func findPodForNode(clientset *kubernetes.Clientset, nodeName string) *corev1.Po
 		FieldSelector: "spec.nodeName=" + nodeName,
 	})
 	if err != nil {
+		log.Printf("[YBS] Failed to list pods for node %s: %v", nodeName, err)
 		return &corev1.Pod{}
 	}
 	for _, pod := range pods.Items {
-		if pod.Labels["app"] == "myminio" {
+		if pod.Labels["v1.min.io/tenant"] == "myminio" {
 			return &pod
 		}
 	}
+	log.Printf("[YBS] No MinIO pod found for node %s with tenant=myminio", nodeName)
 	return &corev1.Pod{}
 }
