@@ -186,7 +186,6 @@ func updateIDCTopology(clientset *kubernetes.Clientset) {
 		AbsPath("/apis/topology.xai/v1alpha1/namespaces/default/idctopologies/minio-topology").
 		Do(context.TODO()).
 		Get()
-
 	if err != nil {
 		log.Printf("[YBS] Failed to get IDCTopology for update: %v", err)
 		return
