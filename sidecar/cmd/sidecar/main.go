@@ -61,6 +61,7 @@ VERSION:
  {{.Version}}
 `
 
+// NodeInfo for sidecar informer
 type NodeInfo struct {
 	IDC        string `json:"idc"`
 	Node       string `json:"node"`
@@ -188,8 +189,8 @@ func reportNodePodStatus(clientset *kubernetes.Clientset, operatorURL string) {
 	podInformer := factory.Core().V1().Pods().Informer()
 
 	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		UpdateFunc: func(old, new interface{}) {
-			node := new.(*corev1.Node)
+		UpdateFunc: func(old, updated interface{}) {
+			node := updated.(*corev1.Node)
 			pod, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
 			if err != nil {
 				console.Printf("[YBS] Failed to get pod %s: %v\n", podName, err)
@@ -214,8 +215,8 @@ func reportNodePodStatus(clientset *kubernetes.Clientset, operatorURL string) {
 	})
 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		UpdateFunc: func(old, new interface{}) {
-			pod := new.(*corev1.Pod)
+		UpdateFunc: func(old, updated interface{}) {
+			pod := updated.(*corev1.Pod)
 			if pod.Name != podName {
 				return
 			}
