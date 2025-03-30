@@ -61,6 +61,7 @@ VERSION:
  {{.Version}}
 `
 
+// NodeInfo for sidecar informer
 type NodeInfo struct {
 	IDC        string `json:"idc"`
 	Node       string `json:"node"`
