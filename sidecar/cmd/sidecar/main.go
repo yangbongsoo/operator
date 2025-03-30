@@ -189,8 +189,8 @@ func reportNodePodStatus(clientset *kubernetes.Clientset, operatorURL string) {
 	podInformer := factory.Core().V1().Pods().Informer()
 
 	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		UpdateFunc: func(old, updated interface{}) {
-			node := updated.(*corev1.Node)
+		UpdateFunc: func(_, newObj interface{}) {
+			node := newObj.(*corev1.Node)
 			pod, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
 			if err != nil {
 				console.Printf("[YBS] Failed to get pod %s: %v\n", podName, err)
@@ -215,8 +215,8 @@ func reportNodePodStatus(clientset *kubernetes.Clientset, operatorURL string) {
 	})
 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		UpdateFunc: func(old, updated interface{}) {
-			pod := updated.(*corev1.Pod)
+		UpdateFunc: func(_, newObj interface{}) {
+			pod := newObj.(*corev1.Pod)
 			if pod.Name != podName {
 				return
 			}
