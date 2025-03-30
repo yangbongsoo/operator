@@ -15,6 +15,7 @@
 package controller
 
 import (
+	"k8s.io/client-go/dynamic"
 	"net/http"
 	"time"
 
@@ -23,12 +24,16 @@ import (
 	"github.com/gorilla/mux"
 )
 
-func configureHTTPUpgradeServer() *http.Server {
+func configureHTTPUpgradeServer(dynamicClient dynamic.Interface) *http.Server {
 	router := mux.NewRouter().SkipClean(true).UseEncodedPath()
 
 	router.Methods(http.MethodGet).
 		PathPrefix(common.WebhookAPIUpdate).
 		Handler(http.StripPrefix(common.WebhookAPIUpdate, http.FileServer(http.Dir(updatePath))))
+
+	router.HandleFunc("/report", func(w http.ResponseWriter, r *http.Request) {
+		reportHandler(w, r, dynamicClient)
+	}).Methods(http.MethodPost)
 
 	router.NotFoundHandler = http.NotFoundHandler()
 

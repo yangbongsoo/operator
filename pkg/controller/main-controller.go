@@ -19,6 +19,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	apimachineryPkgRuntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"log"
 	"maps"
 	"net/http"
 	"os"
@@ -72,6 +78,7 @@ import (
 	queue "k8s.io/client-go/util/workqueue"
 
 	miniov2 "github.com/minio/operator/pkg/apis/minio.min.io/v2"
+	topologyv1alpha1 "github.com/minio/operator/pkg/apis/topology.xai/v1alpha1"
 	clientset "github.com/minio/operator/pkg/client/clientset/versioned"
 	minioscheme "github.com/minio/operator/pkg/client/clientset/versioned/scheme"
 	informers "github.com/minio/operator/pkg/client/informers/externalversions/minio.min.io/v2"
@@ -202,6 +209,9 @@ type Controller struct {
 	// policyBindingListerSynced returns true if the PolicyBinding shared informer
 	// has synced at least once.
 	policyBindingListerSynced cache.InformerSynced
+
+	// dynamicClient is a dynamic client to handle CRD resources
+	dynamicClient dynamic.Interface
 }
 
 // EventType is Event type to handle
@@ -234,6 +244,7 @@ func NewController(
 	tenantInformer informers.TenantInformer,
 	policyBindingInformer stsInformers.PolicyBindingInformer,
 	kubeInformerFactoryInOperatorNamespace kubeinformers.SharedInformerFactory,
+	dynamicClient dynamic.Interface,
 ) *Controller {
 	statefulSetInformer := kubeInformerFactory.Apps().V1().StatefulSets()
 	deploymentInformer := kubeInformerFactory.Apps().V1().Deployments()
@@ -285,7 +296,7 @@ func NewController(
 	}
 
 	// Initialize operator HTTP upgrade server handlers
-	controller.us = configureHTTPUpgradeServer()
+	controller.us = configureHTTPUpgradeServer(dynamicClient)
 
 	// Initialize STS API server handlers
 	controller.sts = configureSTSServer(controller)
@@ -1550,4 +1561,144 @@ func processNextItem(workqueue queue.RateLimitingInterface, syncer func(key stri
 		return true
 	}
 	return true
+}
+
+// NodeInfo for sidecar informer
+type NodeInfo struct {
+	IDC        string `json:"idc"`
+	Node       string `json:"node"`
+	Pod        string `json:"pod"`
+	NodeStatus string `json:"nodeStatus"`
+	PodStatus  string `json:"podStatus"`
+}
+
+func reportHandler(w http.ResponseWriter, r *http.Request, dynamicClient dynamic.Interface) {
+	klog.Info("[YBS] /report endpoint called")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		klog.Infof("[YBS] Failed to read request body: %v\n", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	var nodeInfo NodeInfo
+	if err := json.Unmarshal(body, &nodeInfo); err != nil {
+		klog.Infof("[YBS] Failed to unmarshal nodeInfo: %v", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	klog.Infof("[YBS] Received nodeInfo: Node=%s, NodeStatus=%s, Pod=%s, PodStatus=%s\n",
+		nodeInfo.Node, nodeInfo.NodeStatus, nodeInfo.Pod, nodeInfo.PodStatus)
+
+	updateOrCreateIDCTopology(dynamicClient, nodeInfo)
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func updateOrCreateIDCTopology(dynamicClient dynamic.Interface, nodeInfo NodeInfo) {
+	idcTopologyRes := schema.GroupVersionResource{
+		Group:    "topology.xai",
+		Version:  "v1alpha1",
+		Resource: "idctopologies",
+	}
+
+	idcTopology, err := dynamicClient.Resource(idcTopologyRes).Namespace("default").Get(context.TODO(), "minio-topology", metav1.GetOptions{})
+	if err != nil {
+		createIDCTopology(dynamicClient, nodeInfo)
+		return
+	}
+
+	newIDCTopology := &topologyv1alpha1.IDCTopology{}
+	if err := apimachineryPkgRuntime.DefaultUnstructuredConverter.FromUnstructured(idcTopology.UnstructuredContent(), newIDCTopology); err != nil {
+		log.Printf("[YBS] Failed to convert from unstructured: %v", err)
+		return
+	}
+
+	updateIDCTopologySpec(&newIDCTopology.Spec, nodeInfo)
+
+	unstructuredObj, err := apimachineryPkgRuntime.DefaultUnstructuredConverter.ToUnstructured(newIDCTopology)
+	if err != nil {
+		log.Printf("[YBS] Failed to convert to unstructured: %v", err)
+		return
+	}
+	_, err = dynamicClient.Resource(idcTopologyRes).Namespace("default").Update(context.TODO(), &unstructured.Unstructured{Object: unstructuredObj}, metav1.UpdateOptions{})
+	if err != nil {
+		log.Printf("[YBS] Failed to update IDCTopology: %v", err)
+	} else {
+		log.Println("[YBS] Updated IDCTopology")
+	}
+}
+
+func createIDCTopology(dynamicClient dynamic.Interface, nodeInfo NodeInfo) {
+	newIDCTopology := &topologyv1alpha1.IDCTopology{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "IDCTopology",
+			APIVersion: "topology.xai/v1alpha1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "minio-topology",
+			Namespace: "default",
+		},
+		Spec: topologyv1alpha1.IDCTopologySpec{},
+	}
+	updateIDCTopologySpec(&newIDCTopology.Spec, nodeInfo)
+	idcTopologyRes := schema.GroupVersionResource{
+		Group:    "topology.xai",
+		Version:  "v1alpha1",
+		Resource: "idctopologies",
+	}
+	unstructuredObj, err := apimachineryPkgRuntime.DefaultUnstructuredConverter.ToUnstructured(newIDCTopology)
+	if err != nil {
+		klog.Infof("[YBS] Failed to convert to unstructured: %v", err)
+		return
+	}
+	_, err = dynamicClient.Resource(idcTopologyRes).Namespace("default").Create(context.TODO(), &unstructured.Unstructured{Object: unstructuredObj}, metav1.CreateOptions{})
+	if err != nil {
+		klog.Infof("[YBS] Failed to create IDCTopology: %v", err)
+	} else {
+		klog.Info("[YBS] Created IDCTopology")
+	}
+}
+
+func updateIDCTopologySpec(spec *topologyv1alpha1.IDCTopologySpec, nodeInfo NodeInfo) {
+	idcName := nodeInfo.IDC
+	node := topologyv1alpha1.Node{
+		Node:       nodeInfo.Node,
+		Pod:        nodeInfo.Pod,
+		NodeStatus: nodeInfo.NodeStatus,
+		PodStatus:  nodeInfo.PodStatus,
+	}
+
+	found := false
+	for i, idc := range spec.IDCs {
+		if idc.IDCName == idcName {
+			nodeUpdated := false
+			for j, existingNode := range idc.Nodes {
+				if existingNode.Pod == nodeInfo.Pod {
+					spec.IDCs[i].Nodes[j] = node
+					nodeUpdated = true
+					break
+				}
+			}
+			if !nodeUpdated {
+				spec.IDCs[i].Nodes = append(spec.IDCs[i].Nodes, node)
+			}
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		spec.IDCs = append(spec.IDCs, topologyv1alpha1.IDC{
+			IDCName: idcName,
+			Nodes:   []topologyv1alpha1.Node{node},
+		})
+	}
 }

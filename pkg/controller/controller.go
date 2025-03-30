@@ -17,6 +17,7 @@ package controller
 import (
 	"flag"
 	"fmt"
+	"k8s.io/client-go/dynamic"
 	"os"
 	"os/signal"
 	"strings"
@@ -155,6 +156,15 @@ func StartOperator(kubeconfig string) {
 		podName = "operator-pod"
 	}
 
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		klog.Fatalf("[YBS] Failed to load config: %v", err)
+	}
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		klog.Fatalf("[YBS] Failed to create dynamic client: %v", err)
+	}
+
 	mainController := NewController(
 		podName,
 		namespaces,
@@ -168,6 +178,7 @@ func StartOperator(kubeconfig string) {
 		minioInformerFactory.Minio().V2().Tenants(),
 		minioInformerFactory.Sts().V1beta1().PolicyBindings(),
 		kubeInformerFactoryInOperatorNamespace,
+		dynamicClient,
 	)
 
 	go kubeInformerFactory.Start(stopCh)
