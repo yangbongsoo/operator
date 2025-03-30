@@ -176,14 +176,13 @@ func getNodeStatus(node *corev1.Node) string {
 }
 
 func reportNodePodStatus(clientset *kubernetes.Clientset, operatorURL string) {
-	podName := os.Getenv("POD_NAME")
 	namespace := "minio-tenant"
-	console.Println("[YBS] podName is ", podName)
+	podName := os.Getenv("HOSTNAME")
 	if podName == "" {
-		console.Println("[YBS] Failed to get POD_NAME or POD_NAMESPACE")
+		console.Println("[YBS] Failed to get POD_NAME")
 		return
 	}
-
+	console.Println("[YBS] podName is ", podName)
 	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 0, informers.WithNamespace(namespace))
 	nodeInformer := factory.Core().V1().Nodes().Informer()
 	podInformer := factory.Core().V1().Pods().Informer()
