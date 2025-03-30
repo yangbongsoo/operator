@@ -20,10 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	apimachineryPkgRuntime "k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	"log"
 	"maps"
 	"net/http"
@@ -32,6 +28,11 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	apimachineryPkgRuntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 
 	kubeinformers "k8s.io/client-go/informers"
 

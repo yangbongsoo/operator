@@ -15,9 +15,10 @@
 package controller
 
 import (
-	"k8s.io/client-go/dynamic"
 	"net/http"
 	"time"
+
+	"k8s.io/client-go/dynamic"
 
 	"github.com/minio/operator/pkg/common"
 

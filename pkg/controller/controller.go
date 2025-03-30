@@ -17,12 +17,13 @@ package controller
 import (
 	"flag"
 	"fmt"
-	"k8s.io/client-go/dynamic"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
+
+	"k8s.io/client-go/dynamic"
 
 	stsv1alpha1 "github.com/minio/operator/pkg/apis/sts.min.io/v1alpha1"
 
