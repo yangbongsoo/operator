@@ -158,9 +158,6 @@ func main() {
 	http.HandleFunc("/report", func(w http.ResponseWriter, r *http.Request) {
 		reportHandler(w, r, dynamicClient)
 	})
-	go func() {
-		log.Fatal(http.ListenAndServe(":4221", nil))
-	}()
 	// Run the app - exit on error.
 	if err := newApp(appName).Run(args); err != nil {
 		os.Exit(1)
