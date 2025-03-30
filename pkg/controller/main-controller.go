@@ -210,9 +210,6 @@ type Controller struct {
 	// policyBindingListerSynced returns true if the PolicyBinding shared informer
 	// has synced at least once.
 	policyBindingListerSynced cache.InformerSynced
-
-	// dynamicClient is a dynamic client to handle CRD resources
-	dynamicClient dynamic.Interface
 }
 
 // EventType is Event type to handle
