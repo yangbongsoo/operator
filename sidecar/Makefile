@@ -5,9 +5,9 @@ else
 VERSION ?= $(shell git describe --tags)
 VERSIONV ?= $(shell git describe --tags | sed 's,v,,g')
 endif
-TAG ?= "minio/operator-sidecar:$(VERSION)"
+TAG ?= "minio/operator-sidecar:v7.0.1-ybs"
 SHA ?= $(shell git rev-parse --short HEAD)
-LDFLAGS ?= "-s -w -X github.com/minio/operator/sidecar/pkg.ReleaseTag=$(VERSIONV) -X github.com/minio/operator/sidecar/pkg.Version=$(VERSION) -X github.com/minio/operator/sidecar/pkg.ShortCommitID=$(SHA)"
+LDFLAGS ?= "-s -w -X github.com/minio/operator/sidecar/pkg.ReleaseTag=7.0.1-ybs -X github.com/minio/operator/sidecar/pkg.Version=7.0.1-ybs -X github.com/minio/operator/sidecar/pkg.ShortCommitID=$(SHA)"
 GOPATH := $(shell go env GOPATH)
 GOARCH := $(shell go env GOARCH)
 GOOS := $(shell go env GOOS)

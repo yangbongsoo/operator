@@ -17,10 +17,21 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 
 	"github.com/minio/operator/sidecar/pkg"
 
@@ -49,6 +60,14 @@ FLAGS:
 VERSION:
  {{.Version}}
 `
+
+type NodeInfo struct {
+	IDC        string `json:"idc"`
+	Node       string `json:"node"`
+	Pod        string `json:"pod"`
+	NodeStatus string `json:"nodeStatus"`
+	PodStatus  string `json:"podStatus"`
+}
 
 func newApp(name string) *cli.App {
 	// Collection of console commands currently supported are.
@@ -125,8 +144,119 @@ func main() {
 	args := os.Args
 	// Set the orchestrator app name.
 	appName := filepath.Base(args[0])
+
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		console.Fatalf("[YBS] Failed to load config: %v", err)
+	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		console.Fatalf("[YBS] Failed to create clientset: %v", err)
+	}
+	operatorURL := "http://operator.minio-operator.svc.cluster.local:4221/report"
+	go reportNodePodStatus(clientset, operatorURL)
+
 	// Run the app - exit on error.
 	if err := newApp(appName).Run(args); err != nil {
 		os.Exit(1)
+	}
+}
+
+func getNodeStatus(node *corev1.Node) string {
+	for _, cond := range node.Status.Conditions {
+		if cond.Type == corev1.NodeReady {
+			if cond.Status == corev1.ConditionTrue {
+				return "Ready"
+			}
+			return "NotReady"
+		}
+	}
+	return "NotReady"
+}
+
+func reportNodePodStatus(clientset *kubernetes.Clientset, operatorURL string) {
+	podName := os.Getenv("POD_NAME")
+	namespace := "minio-tenant"
+	console.Println("[YBS] podName is ", podName)
+	if podName == "" {
+		console.Println("[YBS] Failed to get POD_NAME or POD_NAMESPACE")
+		return
+	}
+
+	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 0, informers.WithNamespace(namespace))
+	nodeInformer := factory.Core().V1().Nodes().Informer()
+	podInformer := factory.Core().V1().Pods().Informer()
+
+	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		UpdateFunc: func(old, new interface{}) {
+			node := new.(*corev1.Node)
+			pod, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+			if err != nil {
+				console.Printf("[YBS] Failed to get pod %s: %v\n", podName, err)
+				return
+			}
+			if pod.Spec.NodeName != node.Name {
+				return
+			}
+			idc := node.Labels["topology.kubernetes.io/zone"]
+			if idc == "" {
+				idc = "unknown-idc"
+			}
+			nodeInfo := NodeInfo{
+				IDC:        idc,
+				Node:       node.Name,
+				NodeStatus: getNodeStatus(node),
+				Pod:        pod.Name,
+				PodStatus:  string(pod.Status.Phase),
+			}
+			sendToOperator(nodeInfo, operatorURL)
+		},
+	})
+
+	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		UpdateFunc: func(old, new interface{}) {
+			pod := new.(*corev1.Pod)
+			if pod.Name != podName {
+				return
+			}
+			node, err := clientset.CoreV1().Nodes().Get(context.TODO(), pod.Spec.NodeName, metav1.GetOptions{})
+			if err != nil {
+				console.Printf("[YBS] Failed to get node %s: %v\n", pod.Spec.NodeName, err)
+				return
+			}
+			idc := node.Labels["topology.kubernetes.io/zone"]
+			if idc == "" {
+				idc = "unknown-idc"
+			}
+			nodeInfo := NodeInfo{
+				IDC:        idc,
+				Node:       pod.Spec.NodeName,
+				NodeStatus: getNodeStatus(node),
+				Pod:        pod.Name,
+				PodStatus:  string(pod.Status.Phase),
+			}
+			sendToOperator(nodeInfo, operatorURL)
+		},
+	})
+
+	go nodeInformer.Run(make(chan struct{}))
+	go podInformer.Run(make(chan struct{}))
+	select {} // infinite wait
+}
+
+func sendToOperator(nodeInfo NodeInfo, operatorURL string) {
+	data, err := json.Marshal(nodeInfo)
+	if err != nil {
+		console.Printf("[YBS] Failed to marshal nodeInfo: %v\n", err)
+		return
+	}
+	resp, err := http.Post(operatorURL, "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		console.Printf("[YBS] Failed to send nodeInfo to Operator: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		console.Printf("[YBS] Operator responded with nodeInfo: %s\n", resp.Status)
 	}
 }
