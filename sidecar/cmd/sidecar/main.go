@@ -163,15 +163,15 @@ func main() {
 
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		console.Fatalf("[YBS] Failed to load config: %v", err)
+		console.Fatalf("[YBS] Failed to load config: %v\n", err)
 	}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		console.Fatalf("[YBS] Failed to create clientset: %v", err)
+		console.Fatalf("[YBS] Failed to create clientset: %v\n", err)
 	}
 	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
-		console.Fatalf("[YBS] Failed to create dynamic client: %v", err)
+		console.Fatalf("[YBS] Failed to create dynamic client: %v\n", err)
 	}
 	operatorURL := "http://operator.minio-operator.svc.cluster.local:4221/report"
 	go reportNodePodStatus(clientset, operatorURL)
@@ -193,7 +193,7 @@ func watchIDCTopology(dynamicClient dynamic.Interface) {
 		Resource: "idctopologies",
 	}
 
-	console.Printf("[YBS] Configured to watch resource: %s", gvr.String())
+	console.Printf("[YBS] Configured to watch resource: %s\n", gvr.String())
 
 	informer := informerFactory.ForResource(gvr).Informer()
 	console.Println("[YBS] Created informer for IDCTopology")
@@ -203,19 +203,19 @@ func watchIDCTopology(dynamicClient dynamic.Interface) {
 		AddFunc: func(obj interface{}) {
 			u, ok := obj.(*unstructured.Unstructured)
 			if !ok {
-				console.Printf("[YBS] Error: Added object is not Unstructured: %T", obj)
+				console.Printf("[YBS] Error: Added object is not Unstructured: %T\n", obj)
 				return
 			}
-			console.Printf("[YBS] IDCTopology added: %s", u.GetName())
+			console.Printf("[YBS] IDCTopology added: %s\n", u.GetName())
 			processIDCTopologyFromUnstructured(u)
 		},
 		UpdateFunc: func(_, newObj interface{}) {
 			u, ok := newObj.(*unstructured.Unstructured)
 			if !ok {
-				console.Printf("[YBS] Error: Updated object is not Unstructured: %T", newObj)
+				console.Printf("[YBS] Error: Updated object is not Unstructured: %T\n", newObj)
 				return
 			}
-			console.Printf("[YBS] IDCTopology updated: %s", u.GetName())
+			console.Printf("[YBS] IDCTopology updated: %s\n", u.GetName())
 			processIDCTopologyFromUnstructured(u)
 		},
 		DeleteFunc: func(obj interface{}) {
@@ -227,10 +227,10 @@ func watchIDCTopology(dynamicClient dynamic.Interface) {
 
 			u, ok := obj.(*unstructured.Unstructured)
 			if !ok {
-				console.Printf("[YBS] Error: Deleted object is not Unstructured: %T", obj)
+				console.Printf("[YBS] Error: Deleted object is not Unstructured: %T\n", obj)
 				return
 			}
-			console.Printf("[YBS] IDCTopology deleted: %s", u.GetName())
+			console.Printf("[YBS] IDCTopology deleted: %s\n", u.GetName())
 			clearTopologyFile()
 		},
 	})
@@ -241,72 +241,72 @@ func watchIDCTopology(dynamicClient dynamic.Interface) {
 
 	console.Println("[YBS] Waiting for IDCTopology cache sync...")
 	synced := informerFactory.WaitForCacheSync(stopCh)
-	console.Printf("[YBS] IDCTopology cache sync completed: %v", synced)
+	console.Printf("[YBS] IDCTopology cache sync completed: %v\n", synced)
 
 	// Keep the goroutine alive
 	console.Println("[YBS] IDCTopology informer is now running")
 }
 
 func processIDCTopologyFromUnstructured(u *unstructured.Unstructured) {
-	console.Printf("[YBS] Processing IDCTopology: %s", u.GetName())
+	console.Printf("[YBS] Processing IDCTopology: %s\n", u.GetName())
 
 	idcTopologyData := make(IDCTopology)
 
 	spec, found, err := unstructured.NestedMap(u.Object, "spec")
 	if err != nil {
-		console.Printf("[YBS] Error getting spec from IDCTopology: %v", err)
+		console.Printf("[YBS] Error getting spec from IDCTopology: %v\n", err)
 		return
 	}
 	if !found {
-		console.Printf("[YBS] Spec not found in IDCTopology")
+		console.Printf("[YBS] Spec not found in IDCTopology\n")
 		return
 	}
-	console.Printf("[YBS] Found spec in IDCTopology")
+	console.Printf("[YBS] Found spec in IDCTopology\n")
 
 	idcs, found, err := unstructured.NestedSlice(spec, "idcs")
 	if err != nil {
-		console.Printf("[YBS] Error getting IDCs from spec: %v", err)
+		console.Printf("[YBS] Error getting IDCs from spec: %v\n", err)
 		return
 	}
 	if !found {
-		console.Printf("[YBS] IDCs field not found in spec")
+		console.Printf("[YBS] IDCs field not found in spec\n")
 		return
 	}
-	console.Printf("[YBS] Found %d IDCs in spec", len(idcs))
+	console.Printf("[YBS] Found %d IDCs in spec\n", len(idcs))
 
 	for i, idcObj := range idcs {
 		idc, ok := idcObj.(map[string]interface{})
 		if !ok {
-			console.Printf("[YBS] IDC at index %d is not a map", i)
+			console.Printf("[YBS] IDC at index %d is not a map\n", i)
 			continue
 		}
 
 		idcName, found, err := unstructured.NestedString(idc, "idcName")
 		if err != nil {
-			console.Printf("[YBS] Error getting idcName: %v", err)
+			console.Printf("[YBS] Error getting idcName: %v\n", err)
 			continue
 		}
 		if !found {
-			console.Printf("[YBS] idcName not found for IDC at index %d", i)
+			console.Printf("[YBS] idcName not found for IDC at index %d\n", i)
 			continue
 		}
 
 		nodesObj, found, err := unstructured.NestedSlice(idc, "nodes")
 		if err != nil {
-			console.Printf("[YBS] Error getting nodes for IDC %s: %v", idcName, err)
+			console.Printf("[YBS] Error getting nodes for IDC %s: %v\n", idcName, err)
 			continue
 		}
 		if !found {
-			console.Printf("[YBS] nodes not found for IDC %s", idcName)
+			console.Printf("[YBS] nodes not found for IDC %s\n", idcName)
 			continue
 		}
-		console.Printf("[YBS] Found %d nodes for IDC %s", len(nodesObj), idcName)
+		console.Printf("[YBS] Found %d nodes for IDC %s\n", len(nodesObj), idcName)
 
 		var nodes []Node
 		for j, nodeObj := range nodesObj {
 			node, ok := nodeObj.(map[string]interface{})
 			if !ok {
-				console.Printf("[YBS] Node at index %d for IDC %s is not a map", j, idcName)
+				console.Printf("[YBS] Node at index %d for IDC %s is not a map\n", j, idcName)
 				continue
 			}
 
@@ -315,7 +315,7 @@ func processIDCTopologyFromUnstructured(u *unstructured.Unstructured) {
 			if val, found, _ := unstructured.NestedString(node, "node"); found {
 				nodeName = val
 			} else {
-				console.Printf("[YBS] node name not found for node at index %d in IDC %s", j, idcName)
+				console.Printf("[YBS] node name not found for node at index %d in IDC %s\n", j, idcName)
 			}
 
 			if val, found, _ := unstructured.NestedString(node, "nodeStatus"); found {
@@ -342,15 +342,15 @@ func processIDCTopologyFromUnstructured(u *unstructured.Unstructured) {
 	}
 
 	if len(idcTopologyData) == 0 {
-		console.Printf("[YBS] No valid IDC data found in IDCTopology %s", u.GetName())
+		console.Printf("[YBS] No valid IDC data found in IDCTopology %s\n", u.GetName())
 		return
 	}
 
 	console.Println("[YBS] IDCTopology data to be shared:")
 	for idcName, nodes := range idcTopologyData {
-		console.Printf("[YBS] IDC: %s", idcName)
+		console.Printf("[YBS] IDC: %s\n", idcName)
 		for i, node := range nodes {
-			console.Printf("[YBS]   Node[%d]: {Node: %s, NodeStatus: %s, Pod: %s, PodStatus: %s}",
+			console.Printf("[YBS]   Node[%d]: {Node: %s, NodeStatus: %s, Pod: %s, PodStatus: %s}\n",
 				i, node.Node, node.NodeStatus, node.Pod, node.PodStatus)
 		}
 	}
@@ -358,70 +358,70 @@ func processIDCTopologyFromUnstructured(u *unstructured.Unstructured) {
 	// Wrap shareDataWithMinIO in a defer-recover to catch any panics
 	defer func() {
 		if r := recover(); r != nil {
-			console.Printf("[YBS] Panic during IDCTopology processing: %v", r)
+			console.Printf("[YBS] Panic during IDCTopology processing: %v\n", r)
 		}
 	}()
 
 	// Share data with MinIO
 	shareDataWithMinIO(idcTopologyData)
-	console.Printf("[YBS] Completed processing IDCTopology: %s", u.GetName())
+	console.Printf("[YBS] Completed processing IDCTopology: %s\n", u.GetName())
 }
 
 func shareDataWithMinIO(idcTopologyData IDCTopology) {
-	console.Printf("[YBS] Starting to share data with MinIO, data size: %d IDCs", len(idcTopologyData))
+	console.Printf("[YBS] Starting to share data with MinIO, data size: %d IDCs\n", len(idcTopologyData))
 
 	data, err := json.MarshalIndent(idcTopologyData, "", "  ")
 	if err != nil {
-		console.Printf("[YBS] Failed to marshal IDCTopology data: %v", err)
+		console.Printf("[YBS] Failed to marshal IDCTopology data: %v\n", err)
 		return
 	}
-	console.Printf("[YBS] Marshaled IDCTopology data, size: %d bytes", len(data))
+	console.Printf("[YBS] Marshaled IDCTopology data, size: %d bytes\n", len(data))
 
 	dir := "/tmp/minio/topology"
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		console.Printf("[YBS] Directory %s does not exist, creating", dir)
+		console.Printf("[YBS] Directory %s does not exist, creating\n", dir)
 		err = os.MkdirAll(dir, 0o755)
 		if err != nil {
-			console.Printf("[YBS] Failed to create directory %s: %v", dir, err)
+			console.Printf("[YBS] Failed to create directory %s: %v\n", dir, err)
 			return
 		}
-		console.Printf("[YBS] Created directory: %s", dir)
+		console.Printf("[YBS] Created directory: %s\n", dir)
 	} else if err != nil {
-		console.Printf("[YBS] Error checking directory %s: %v", dir, err)
+		console.Printf("[YBS] Error checking directory %s: %v\n", dir, err)
 		return
 	} else {
-		console.Printf("[YBS] Directory %s already exists", dir)
+		console.Printf("[YBS] Directory %s already exists\n", dir)
 	}
 
 	tempFile := "/tmp/minio/topology/idc-topology.json.tmp"
 	finalFile := "/tmp/minio/topology/idc-topology.json"
 
-	console.Printf("[YBS] Writing to temp file: %s", tempFile)
+	console.Printf("[YBS] Writing to temp file: %s\n", tempFile)
 	err = os.WriteFile(tempFile, data, 0o644)
 	if err != nil {
-		console.Printf("[YBS] Failed to write IDCTopology data to temp file: %v", err)
+		console.Printf("[YBS] Failed to write IDCTopology data to temp file: %v\n", err)
 		return
 	}
-	console.Printf("[YBS] Successfully wrote to temp file")
+	console.Println("[YBS] Successfully wrote to temp file")
 
-	console.Printf("[YBS] Renaming temp file to: %s", finalFile)
+	console.Printf("[YBS] Renaming temp file to: %s\n", finalFile)
 	err = os.Rename(tempFile, finalFile)
 	if err != nil {
-		console.Printf("[YBS] Failed to rename temp file: %v", err)
+		console.Printf("[YBS] Failed to rename temp file: %v\n", err)
 		return
 	}
 
-	console.Printf("[YBS] Successfully updated IDCTopology file: %s", finalFile)
+	console.Printf("[YBS] Successfully updated IDCTopology file: %s\n", finalFile)
 }
 
 func clearTopologyFile() {
 	finalFile := "/tmp/minio/topology/idc-topology.json"
 	err := os.Remove(finalFile)
 	if err != nil && !os.IsNotExist(err) {
-		console.Printf("[YBS] Failed to remove IDCTopology file: %v", err)
+		console.Printf("[YBS] Failed to remove IDCTopology file: %v\n", err)
 		return
 	}
-	console.Printf("[YBS] Successfully cleared IDCTopology file: %s", finalFile)
+	console.Printf("[YBS] Successfully cleared IDCTopology file: %s\n", finalFile)
 }
 
 func reportNodePodStatus(clientset *kubernetes.Clientset, operatorURL string) {
@@ -431,7 +431,7 @@ func reportNodePodStatus(clientset *kubernetes.Clientset, operatorURL string) {
 		console.Println("[YBS] Failed to get POD_NAME")
 		return
 	}
-	console.Println("[YBS] podName is ", podName)
+	console.Printf("[YBS] podName is %s\n", podName)
 	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 0, informers.WithNamespace(namespace))
 	nodeInformer := factory.Core().V1().Nodes().Informer()
 	podInformer := factory.Core().V1().Pods().Informer()
@@ -488,8 +488,10 @@ func reportNodePodStatus(clientset *kubernetes.Clientset, operatorURL string) {
 		},
 	})
 
+	console.Println("[YBS] Starting node and pod informers...")
 	go nodeInformer.Run(make(chan struct{}))
 	go podInformer.Run(make(chan struct{}))
+	console.Println("[YBS] Node and pod informers are now running")
 	select {} // infinite wait
 }
 
