@@ -213,7 +213,6 @@ func watchIDCTopology(dynamicClient dynamic.Interface) {
 	stopCh := make(chan struct{})
 	informerFactory.Start(stopCh)
 	informerFactory.WaitForCacheSync(stopCh)
-	go informer.Run(stopCh)
 }
 
 func processIDCTopologyFromUnstructured(u *unstructured.Unstructured) {
