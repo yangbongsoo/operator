@@ -197,7 +197,7 @@ func watchIDCTopology(dynamicClient dynamic.Interface) {
 			console.Printf("[YBS] IDCTopology added: %s", u.GetName())
 			processIDCTopologyFromUnstructured(u)
 		},
-		UpdateFunc: func(oldObj, newObj interface{}) {
+		UpdateFunc: func(_, newObj interface{}) {
 			u := newObj.(*unstructured.Unstructured)
 			console.Printf("[YBS] IDCTopology updated: %s", u.GetName())
 			processIDCTopologyFromUnstructured(u)
