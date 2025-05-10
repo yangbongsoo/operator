@@ -372,7 +372,7 @@ func (c *Controller) checkMinIOPodsHealth(tenant *miniov2.Tenant) error {
 	// Check health for each pod
 	for _, pod := range tenantPods.Items {
 		// Get pod's MinIO server address
-		podAddress := fmt.Sprintf("%s.%s.%s.svc.%s",
+		podAddress := fmt.Sprintf("%s.%s.%s.svc.%s:9000",
 			pod.Name,
 			tenant.MinIOHLServiceName(),
 			tenant.Namespace,
@@ -394,24 +394,39 @@ func (c *Controller) checkMinIOPodsHealth(tenant *miniov2.Tenant) error {
 		defer hcancel()
 
 		// Check pod health
-		healthResult, err := aClnt.Healthy(hctx, madmin.HealthOpts{})
-		if err != nil {
-			if isNetworkError(err) {
-				klog.Infof("[YBS] isNetworkError podHealthFailures[%s]: %d, network error: %v", pod.Name, podHealthFailures[pod.Name], err)
+		// healthResult, err := aClnt.Healthy(hctx, madmin.HealthOpts{})
+		aliveCh := aClnt.Alive(hctx, madmin.AliveOpts{})
+		result := <-aliveCh
+		if result.Error != nil {
+			if isNetworkError(result.Error) {
+				klog.Infof("[YBS] isNetworkError podHealthFailures[%s]: %d, network error: %v", pod.Name, podHealthFailures[pod.Name], result.Error)
 				podHealthFailures[pod.Name]++
 			} else {
-				klog.Infof("[YBS] Pod.Name: %s, non-network error, resetting counter. err: %v", pod.Name, err)
+				klog.Infof("[YBS] Pod.Name: %s, non-network error, resetting counter. err: %v", pod.Name, result.Error)
 				podHealthFailures[pod.Name] = 0
 			}
-		} else if healthResult.Healthy {
-			// Reset failure count if health check succeeds
-			klog.Infof("[YBS] healthResult.Healthy podHealthFailures[%s]: %d, err: %v", pod.Name, podHealthFailures[pod.Name], err)
-			podHealthFailures[pod.Name] = 0
 		} else {
-			klog.Infof("[YBS] Else podHealthFailures[%s]: %d, healthResult: %v", pod.Name, podHealthFailures[pod.Name], healthResult)
-			// For unhealthy but reachable pods, reset the counter
+			// Reset failure count if health check succeeds
+			klog.Infof("[YBS] health check succeeded for pod %s", pod.Name)
 			podHealthFailures[pod.Name] = 0
 		}
+		// if err != nil {
+		// 	if isNetworkError(err) {
+		// 		klog.Infof("[YBS] isNetworkError podHealthFailures[%s]: %d, network error: %v", pod.Name, podHealthFailures[pod.Name], err)
+		// 		podHealthFailures[pod.Name]++
+		// 	} else {
+		// 		klog.Infof("[YBS] Pod.Name: %s, non-network error, resetting counter. err: %v", pod.Name, err)
+		// 		podHealthFailures[pod.Name] = 0
+		// 	}
+		// } else if healthResult.Healthy {
+		// 	// Reset failure count if health check succeeds
+		// 	klog.Infof("[YBS] healthResult.Healthy podHealthFailures[%s]: %d, err: %v", pod.Name, podHealthFailures[pod.Name], err)
+		// 	podHealthFailures[pod.Name] = 0
+		// } else {
+		// 	klog.Infof("[YBS] Else podHealthFailures[%s]: %d, healthResult: %v", pod.Name, podHealthFailures[pod.Name], healthResult)
+		// 	// For unhealthy but reachable pods, reset the counter
+		// 	podHealthFailures[pod.Name] = 0
+		// }
 
 		// If pod has failed 3 consecutive network checks, update IDCTopology
 		if podHealthFailures[pod.Name] >= 3 {
