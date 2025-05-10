@@ -429,7 +429,7 @@ func (c *Controller) checkMinIOPodsHealth(tenant *miniov2.Tenant) error {
 		// }
 
 		// If pod has failed 3 consecutive network checks, update IDCTopology
-		if podHealthFailures[pod.Name] >= 3 {
+		if podHealthFailures[pod.Name] >= 2 {
 			klog.Infof("[YBS] podHealthFailures[%s]: %d, updating IDCTopology", pod.Name, podHealthFailures[pod.Name])
 			// Find the pod in existing topology and update its NodeStatus
 			for _, idc := range existingTopology.Spec.IDCs {
