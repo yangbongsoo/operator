@@ -466,7 +466,7 @@ func isNetworkError(err error) bool {
 	// Check for common network error types
 	if strings.Contains(err.Error(), "connection refused") ||
 		strings.Contains(err.Error(), "connection reset") ||
-		strings.Contains(err.Error(), "no such host") ||
+		strings.Contains(err.Error(), "context deadline exceeded") ||
 		strings.Contains(err.Error(), "timeout") ||
 		strings.Contains(err.Error(), "network is unreachable") ||
 		strings.Contains(err.Error(), "connection timed out") {
