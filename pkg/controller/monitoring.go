@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/minio/madmin-go/v3"
@@ -24,10 +25,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apimachineryPkgRuntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/klog/v2"
 
 	miniov2 "github.com/minio/operator/pkg/apis/minio.min.io/v2"
+	topologyv1alpha1 "github.com/minio/operator/pkg/apis/topology.xai/v1alpha1"
 )
 
 const (
@@ -326,6 +330,166 @@ func (c *Controller) syncHealthCheckHandler(key string) (Result, error) {
 	}
 
 	return WrapResult(Result{}, nil)
+}
+
+// podHealthFailures tracks consecutive health check failures for each pod
+var podHealthFailures = make(map[string]int)
+
+// checkMinIOPodsHealth checks the health of each MinIO pod in a tenant
+func (c *Controller) checkMinIOPodsHealth(tenant *miniov2.Tenant) error {
+	klog.Infof("[YBS] checkMinIOPodsHealth called")
+	// Get all pods for the tenant
+	tenantPods, err := c.kubeClientSet.CoreV1().Pods(tenant.Namespace).List(context.Background(), metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("%s=%s", miniov2.TenantLabel, tenant.Name),
+	})
+	if err != nil {
+		return fmt.Errorf("[YBS] failed to get pods for tenant %s/%s: %v", tenant.Namespace, tenant.Name, err)
+	}
+
+	// Get existing IDCTopology
+	idcTopologyRes := schema.GroupVersionResource{
+		Group:    "topology.xai",
+		Version:  "v1alpha1",
+		Resource: "idctopologies",
+	}
+
+	idcTopology, err := c.dynamicClient.Resource(idcTopologyRes).Namespace("default").Get(context.TODO(), "minio-topology", metav1.GetOptions{})
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			klog.Infof("[YBS] IDCTopology not found yet, skipping health check updates")
+			return nil
+		}
+		klog.Errorf("[YBS] Failed to get IDCTopology: %v", err)
+		return nil
+	}
+
+	existingTopology := &topologyv1alpha1.IDCTopology{}
+	if err := apimachineryPkgRuntime.DefaultUnstructuredConverter.FromUnstructured(idcTopology.UnstructuredContent(), existingTopology); err != nil {
+		klog.Errorf("[YBS] Failed to convert from unstructured: %v", err)
+		return nil
+	}
+
+	// Check health for each pod
+	for _, pod := range tenantPods.Items {
+		// Get pod's MinIO server address
+		podAddress := fmt.Sprintf("%s.%s.%s.svc.%s",
+			pod.Name,
+			tenant.MinIOHLServiceName(),
+			tenant.Namespace,
+			miniov2.GetClusterDomain())
+
+		klog.Infof("[YBS] Checking pod %s at address %s", pod.Name, podAddress)
+
+		// Create anonymous client for health check
+		aClnt, err := madmin.NewAnonymousClient(podAddress, tenant.TLS())
+		if err != nil {
+			klog.Errorf("[YBS] Failed to create anonymous client for pod %s: %v", pod.Name, err)
+			podHealthFailures[pod.Name]++
+			continue
+		}
+		aClnt.SetCustomTransport(c.getTransport())
+
+		// Set timeout for health check
+		hctx, hcancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer hcancel()
+
+		// Check pod health
+		healthResult, err := aClnt.Healthy(hctx, madmin.HealthOpts{})
+		if err != nil {
+			if isNetworkError(err) {
+				klog.Infof("[YBS] isNetworkError podHealthFailures[%s]: %d, network error: %v", pod.Name, podHealthFailures[pod.Name], err)
+				podHealthFailures[pod.Name]++
+			} else {
+				klog.Infof("[YBS] Pod.Name: %s, non-network error, resetting counter. err: %v", pod.Name, err)
+				podHealthFailures[pod.Name] = 0
+			}
+		} else if healthResult.Healthy {
+			// Reset failure count if health check succeeds
+			klog.Infof("[YBS] healthResult.Healthy podHealthFailures[%s]: %d, err: %v", pod.Name, podHealthFailures[pod.Name], err)
+			podHealthFailures[pod.Name] = 0
+		} else {
+			klog.Infof("[YBS] Else podHealthFailures[%s]: %d, healthResult: %v", pod.Name, podHealthFailures[pod.Name], healthResult)
+			// For unhealthy but reachable pods, reset the counter
+			podHealthFailures[pod.Name] = 0
+		}
+
+		// If pod has failed 3 consecutive network checks, update IDCTopology
+		if podHealthFailures[pod.Name] >= 3 {
+			klog.Infof("[YBS] podHealthFailures[%s]: %d, updating IDCTopology", pod.Name, podHealthFailures[pod.Name])
+			// Find the pod in existing topology and update its NodeStatus
+			for _, idc := range existingTopology.Spec.IDCs {
+				for _, node := range idc.Nodes {
+					if node.Pod == pod.Name {
+						klog.Infof("[YBS] node.Pod == pod.Name %s, updating IDCTopology", pod.Name)
+						// Create new NodeInfo with updated status
+						nodeInfo := NodeInfo{
+							IDC:        idc.IDCName,
+							Node:       node.Node,
+							NodeStatus: "NotReady",
+							Pod:        node.Pod,
+							PodStatus:  node.PodStatus,
+						}
+						updateOrCreateIDCTopology(c.dynamicClient, nodeInfo)
+						// Reset failure count after update
+						podHealthFailures[pod.Name] = 0
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// isNetworkError checks if the error is a network-related error
+func isNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check for common network error types
+	if strings.Contains(err.Error(), "connection refused") ||
+		strings.Contains(err.Error(), "connection reset") ||
+		strings.Contains(err.Error(), "no such host") ||
+		strings.Contains(err.Error(), "timeout") ||
+		strings.Contains(err.Error(), "network is unreachable") ||
+		strings.Contains(err.Error(), "connection timed out") {
+		return true
+	}
+
+	return false
+}
+
+// startPodHealthMonitor starts a goroutine that periodically checks the health of all MinIO pods
+func (c *Controller) startPodHealthMonitor(stopCh <-chan struct{}) {
+	klog.Info("[YBS] startPodHealthMonitor called")
+	time.Sleep(1 * time.Minute)
+	klog.Info("[YBS] startPodHealthMonitor after 1 minute")
+
+	ticker := time.NewTicker(10 * time.Second) // 10초마다 체크
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			tenants, err := c.minioClientSet.MinioV2().Tenants("").List(context.Background(), metav1.ListOptions{})
+			if err != nil {
+				klog.Infof("[YBS] Failed to list tenants: %v", err)
+				continue
+			}
+
+			// Check health for each tenant's pods
+			for _, tenant := range tenants.Items {
+				if err := c.checkMinIOPodsHealth(&tenant); err != nil {
+					klog.Infof("[YBS] Failed to check pod health for tenant %s/%s: %v",
+						tenant.Namespace, tenant.Name, err)
+				}
+			}
+		case <-stopCh:
+			return
+		}
+	}
 }
 
 // safeToInt64 converts an unsigned 64-bit integer to a signed int64

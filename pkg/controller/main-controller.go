@@ -210,6 +210,8 @@ type Controller struct {
 	// policyBindingListerSynced returns true if the PolicyBinding shared informer
 	// has synced at least once.
 	policyBindingListerSynced cache.InformerSynced
+
+	dynamicClient dynamic.Interface
 }
 
 // EventType is Event type to handle
@@ -291,6 +293,7 @@ func NewController(
 		hostsTemplate:             hostsTemplate,
 		operatorVersion:           operatorVersion,
 		policyBindingListerSynced: policyBindingInformer.Informer().HasSynced,
+		dynamicClient:             dynamicClient,
 	}
 
 	// Initialize operator HTTP upgrade server handlers
@@ -618,6 +621,11 @@ func (c *Controller) Start(threadiness int, stopCh <-chan struct{}) error {
 			},
 		},
 	})
+
+	klog.Infof("[YBS] Starting pod health monitor")
+	// Start the pod health monitor
+	go c.startPodHealthMonitor(stopCh)
+
 	return nil
 }
 
