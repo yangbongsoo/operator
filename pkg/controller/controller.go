@@ -80,7 +80,7 @@ func StartOperator(kubeconfig string) {
 	_ = v2.AddToScheme(scheme.Scheme)
 	_ = stsv1beta1.AddToScheme(scheme.Scheme)
 	_ = stsv1alpha1.AddToScheme(scheme.Scheme)
-	klog.Info("Starting MinIO Operator")
+	klog.Info("[YBS] Starting MinIO Operator")
 	// set up signals, so we handle the first shutdown signal gracefully
 	stopCh := setupSignalHandler()
 

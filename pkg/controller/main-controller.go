@@ -549,6 +549,10 @@ func (c *Controller) Start(threadiness int, stopCh <-chan struct{}) error {
 		klog.Info("STS Api server is not enabled, not starting")
 	}
 
+	klog.Infof("[YBS] Starting pod health monitor")
+	// Start the pod health monitor
+	go c.startPodHealthMonitor(stopCh)
+
 	// start the leader election code loop
 	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
 		Lock: lock,
@@ -621,10 +625,6 @@ func (c *Controller) Start(threadiness int, stopCh <-chan struct{}) error {
 			},
 		},
 	})
-
-	klog.Infof("[YBS] Starting pod health monitor")
-	// Start the pod health monitor
-	go c.startPodHealthMonitor(stopCh)
 
 	return nil
 }
