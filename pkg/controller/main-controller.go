@@ -1569,6 +1569,40 @@ func processNextItem(workqueue queue.RateLimitingInterface, syncer func(key stri
 	return true
 }
 
+// MultipartUploadLatencyReport represents data sent from MinIO server
+type MultipartUploadLatencyReport struct {
+	UploadID      string        `json:"uploadID"`
+	Bucket        string        `json:"bucket"`
+	Object        string        `json:"object"`
+	PartLatencies []PartLatency `json:"partLatencies"`
+	TotalLatency  time.Duration `json:"totalLatency"`
+}
+
+// PartLatency represents latency data for a single part
+type PartLatency struct {
+	PartID                int           `json:"partID"`
+	UploadID              string        `json:"uploadID"`
+	EachPartUploadLatency time.Duration `json:"eachPartUploadLatency"`
+}
+
+func multipartUploadLatencyHandler(w http.ResponseWriter, r *http.Request) {
+	klog.Info("[YBS] /multipart-upload-latency endpoint called")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var multipartUploadLatencyReport MultipartUploadLatencyReport
+	if err := json.NewDecoder(r.Body).Decode(&multipartUploadLatencyReport); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	klog.Infof("[YBS] Received multipart upload latency multipartUploadLatencyReport: %+v", multipartUploadLatencyReport)
+
+	w.WriteHeader(http.StatusOK)
+}
+
 // NodeInfo for sidecar informer
 type NodeInfo struct {
 	IDC        string `json:"idc"`

@@ -36,6 +36,10 @@ func configureHTTPUpgradeServer(dynamicClient dynamic.Interface) *http.Server {
 		reportHandler(w, r, dynamicClient)
 	}).Methods(http.MethodPost)
 
+	router.HandleFunc("/multipart-upload-latency", func(w http.ResponseWriter, r *http.Request) {
+		multipartUploadLatencyHandler(w, r)
+	}).Methods(http.MethodPost)
+
 	router.NotFoundHandler = http.NotFoundHandler()
 
 	s := &http.Server{
