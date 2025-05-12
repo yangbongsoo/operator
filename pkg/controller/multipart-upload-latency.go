@@ -1,23 +1,22 @@
 package controller
 
 import (
+	"maps"
 	"sort"
 	"sync"
 	"time"
 
-	"maps"
-
 	"k8s.io/klog/v2"
 )
 
-// UploadLatencyManager는 멀티파트 업로드 지연 시간 데이터를 관리합니다.
+// UploadLatencyManager manages multipart upload latency data.
 type UploadLatencyManager struct {
 	mu sync.RWMutex
 
 	multipartUploadMetric map[string]*MultipartUploadMetric
 }
 
-// MultipartUploadMetric는 하나의 멀티파트 업로드에 관한 모든 정보를 저장합니다.
+// MultipartUploadMetric is all information about a multipart upload.
 type MultipartUploadMetric struct {
 	UploadID     string            // 업로드 ID
 	Bucket       string            // 버킷 이름
@@ -29,18 +28,22 @@ type MultipartUploadMetric struct {
 	IsComplete   bool              // 업로드 완료 여부
 }
 
-// PartInfo는 하나의 업로드 파트에 관한 정보를 저장합니다.
+// PartInfo is all information about a part of a multipart upload.
 type PartInfo struct {
+	Bucket                string        // 버킷 이름
+	Object                string        // 객체 이름
 	PartID                int           // 파트 ID
 	EachPartUploadLatency time.Duration // 파트 업로드 지연 시간
 }
 
+// NewUploadLatencyManager creates a new UploadLatencyManager.
 func NewUploadLatencyManager() *UploadLatencyManager {
 	return &UploadLatencyManager{
 		multipartUploadMetric: make(map[string]*MultipartUploadMetric),
 	}
 }
 
+// RecordUploadStart records the start of a multipart upload.
 func (m *UploadLatencyManager) RecordUploadStart(uploadID, bucket, object string, startTime time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -62,7 +65,7 @@ func (m *UploadLatencyManager) RecordUploadStart(uploadID, bucket, object string
 	klog.Infof("[YBS] Recorded upload start - ID: %s, Bucket: %s, Object: %s", uploadID, bucket, object)
 }
 
-// RecordPartUpload는 파트 업로드를 기록합니다.
+// RecordPartUpload records the part upload.
 func (m *UploadLatencyManager) RecordPartUpload(uploadID, bucket, object string, partID int, eachPartUploadLatency time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -71,6 +74,8 @@ func (m *UploadLatencyManager) RecordPartUpload(uploadID, bucket, object string,
 		info, exists := m.multipartUploadMetric[uploadID]
 		if exists {
 			info.Parts[partID] = &PartInfo{
+				Bucket:                bucket,
+				Object:                object,
 				PartID:                partID,
 				EachPartUploadLatency: eachPartUploadLatency,
 			}
@@ -93,6 +98,7 @@ func (m *UploadLatencyManager) RecordPartUpload(uploadID, bucket, object string,
 		uploadID, partID)
 }
 
+// RecordUploadComplete records the completion of a multipart upload.
 func (m *UploadLatencyManager) RecordUploadComplete(uploadID, bucket, object string, completeTime time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -100,6 +106,12 @@ func (m *UploadLatencyManager) RecordUploadComplete(uploadID, bucket, object str
 	for i := range 5 {
 		info, exists := m.multipartUploadMetric[uploadID]
 		if exists {
+			if info.Bucket != bucket || info.Object != object {
+				klog.Warningf("[YBS] Upload info mismatch - ID: %s, Bucket: %s, Object: %s",
+					uploadID, info.Bucket, info.Object)
+				return
+			}
+
 			// 업로드 정보가 존재하면 완료 상태 업데이트하고 종료
 			info.IsComplete = true
 			info.CompleteTime = completeTime
@@ -121,6 +133,7 @@ func (m *UploadLatencyManager) RecordUploadComplete(uploadID, bucket, object str
 	klog.Warningf("[YBS] Failed to find upload info after 5 attempts - ID: %s", uploadID)
 }
 
+// GetMultipartUploadMetric gets the multipart upload metric.
 func (m *UploadLatencyManager) GetMultipartUploadMetric(uploadID string) *MultipartUploadMetric {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -133,6 +146,7 @@ func (m *UploadLatencyManager) GetMultipartUploadMetric(uploadID string) *Multip
 	return nil
 }
 
+// GetAllMultipartUploadMetric gets all multipart upload metrics.
 func (m *UploadLatencyManager) GetAllMultipartUploadMetric() map[string]*MultipartUploadMetric {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -144,6 +158,7 @@ func (m *UploadLatencyManager) GetAllMultipartUploadMetric() map[string]*Multipa
 	return result
 }
 
+// GetLatencyStats gets the latency stats.
 func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -151,15 +166,15 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	stats := make(map[string]any)
 
 	// 1. TotalLatency 통계 계산
-	var totalLatencySum time.Duration
-	var totalLatencyMin time.Duration
-	var totalLatencyMax time.Duration
+	var sumTotalLatency time.Duration
+	var minTotalLatency time.Duration
+	var maxTotalLatency time.Duration
 	completedUploadCount := 0
 
 	// 2. EachPartUploadLatency 통계 계산
-	var partLatencySum time.Duration
-	var partLatencyMin time.Duration
-	var partLatencyMax time.Duration
+	var sumPartLatency time.Duration
+	var minPartLatency time.Duration
+	var maxPartLatency time.Duration
 	totalPartCount := 0
 
 	// 3. part 별 latency
@@ -174,29 +189,29 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 		// 완료된 업로드만 계산에 포함
 		if uploadMetric.IsComplete {
 			// TotalLatency 통계
-			if isFirst || uploadMetric.TotalLatency < totalLatencyMin {
-				totalLatencyMin = uploadMetric.TotalLatency
+			if isFirst || uploadMetric.TotalLatency < minTotalLatency {
+				minTotalLatency = uploadMetric.TotalLatency
 			}
 
-			if isFirst || uploadMetric.TotalLatency > totalLatencyMax {
-				totalLatencyMax = uploadMetric.TotalLatency
+			if isFirst || uploadMetric.TotalLatency > maxTotalLatency {
+				maxTotalLatency = uploadMetric.TotalLatency
 			}
 
-			totalLatencySum += uploadMetric.TotalLatency
+			sumTotalLatency += uploadMetric.TotalLatency
 			completedUploadCount++
 			isFirst = false
 
 			// 완료된 업로드의 파트에 대한 통계 계산
 			for _, part := range uploadMetric.Parts {
-				if isFirstPart || part.EachPartUploadLatency < partLatencyMin {
-					partLatencyMin = part.EachPartUploadLatency
+				if isFirstPart || part.EachPartUploadLatency < minPartLatency {
+					minPartLatency = part.EachPartUploadLatency
 				}
 
-				if isFirstPart || part.EachPartUploadLatency > partLatencyMax {
-					partLatencyMax = part.EachPartUploadLatency
+				if isFirstPart || part.EachPartUploadLatency > maxPartLatency {
+					maxPartLatency = part.EachPartUploadLatency
 				}
 
-				partLatencySum += part.EachPartUploadLatency
+				sumPartLatency += part.EachPartUploadLatency
 				totalPartCount++
 				isFirstPart = false
 			}
@@ -223,9 +238,9 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	// TotalLatency 통계 결과
 	totalLatencyStats := make(map[string]any)
 	if completedUploadCount > 0 {
-		totalLatencyStats["average"] = totalLatencySum / time.Duration(completedUploadCount)
-		totalLatencyStats["min"] = totalLatencyMin
-		totalLatencyStats["max"] = totalLatencyMax
+		totalLatencyStats["average"] = sumTotalLatency / time.Duration(completedUploadCount)
+		totalLatencyStats["min"] = minTotalLatency
+		totalLatencyStats["max"] = maxTotalLatency
 		totalLatencyStats["count"] = completedUploadCount
 	} else {
 		totalLatencyStats["average"] = time.Duration(0)
@@ -237,9 +252,9 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	// EachPartUploadLatency 통계 결과
 	partLatencyStats := make(map[string]any)
 	if totalPartCount > 0 {
-		partLatencyStats["average"] = partLatencySum / time.Duration(totalPartCount)
-		partLatencyStats["min"] = partLatencyMin
-		partLatencyStats["max"] = partLatencyMax
+		partLatencyStats["average"] = sumPartLatency / time.Duration(totalPartCount)
+		partLatencyStats["min"] = minPartLatency
+		partLatencyStats["max"] = maxPartLatency
 		partLatencyStats["count"] = totalPartCount
 	} else {
 		partLatencyStats["average"] = time.Duration(0)
@@ -260,6 +275,7 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	return stats, nil
 }
 
+// ClearMetricsAfterStats clears the metrics after getting the stats.
 func (m *UploadLatencyManager) ClearMetricsAfterStats() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

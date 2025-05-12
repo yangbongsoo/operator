@@ -1599,6 +1599,11 @@ type CompleteMultipartUploadLatency struct {
 
 func (c *Controller) getLatencyStatsHandler(w http.ResponseWriter, r *http.Request) {
 	klog.Info("[YBS] /multipart-upload-latency-stats endpoint called")
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	stats, err := c.uploadLatencyManager.GetLatencyStats()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get stats: %v", err), http.StatusInternalServerError)
