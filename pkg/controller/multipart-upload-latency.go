@@ -227,8 +227,10 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 			for _, partID := range partIDs {
 				part := uploadMetric.Parts[partID]
 				parts = append(parts, map[string]any{
-					"partID":  part.PartID,
-					"latency": part.EachPartUploadLatency,
+					"partID":    part.PartID,
+					"latencyNS": part.EachPartUploadLatency.Nanoseconds(),
+					"latencyMS": float64(part.EachPartUploadLatency.Nanoseconds()) / 1e6,
+					"latencyS":  float64(part.EachPartUploadLatency.Nanoseconds()) / 1e9,
 				})
 			}
 			partDetails[uploadMetric.UploadID] = parts
@@ -238,28 +240,81 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	// TotalLatency 통계 결과
 	totalLatencyStats := make(map[string]any)
 	if completedUploadCount > 0 {
-		totalLatencyStats["average"] = sumTotalLatency / time.Duration(completedUploadCount)
-		totalLatencyStats["min"] = minTotalLatency
-		totalLatencyStats["max"] = maxTotalLatency
+		avgTotalLatency := sumTotalLatency / time.Duration(completedUploadCount)
+
+		// 나노초 단위
+		totalLatencyStats["averageNS"] = avgTotalLatency.Nanoseconds()
+		totalLatencyStats["minNS"] = minTotalLatency.Nanoseconds()
+		totalLatencyStats["maxNS"] = maxTotalLatency.Nanoseconds()
+
+		// 밀리초 단위
+		totalLatencyStats["averageMS"] = float64(avgTotalLatency.Nanoseconds()) / 1e6
+		totalLatencyStats["minMS"] = float64(minTotalLatency.Nanoseconds()) / 1e6
+		totalLatencyStats["maxMS"] = float64(maxTotalLatency.Nanoseconds()) / 1e6
+
+		// 초 단위
+		totalLatencyStats["averageS"] = float64(avgTotalLatency.Nanoseconds()) / 1e9
+		totalLatencyStats["minS"] = float64(minTotalLatency.Nanoseconds()) / 1e9
+		totalLatencyStats["maxS"] = float64(maxTotalLatency.Nanoseconds()) / 1e9
+
 		totalLatencyStats["count"] = completedUploadCount
 	} else {
-		totalLatencyStats["average"] = time.Duration(0)
-		totalLatencyStats["min"] = time.Duration(0)
-		totalLatencyStats["max"] = time.Duration(0)
+		// 나노초 단위
+		totalLatencyStats["averageNS"] = int64(0)
+		totalLatencyStats["minNS"] = int64(0)
+		totalLatencyStats["maxNS"] = int64(0)
+
+		// 밀리초 단위
+		totalLatencyStats["averageMS"] = float64(0)
+		totalLatencyStats["minMS"] = float64(0)
+		totalLatencyStats["maxMS"] = float64(0)
+
+		// 초 단위
+		totalLatencyStats["averageS"] = float64(0)
+		totalLatencyStats["minS"] = float64(0)
+		totalLatencyStats["maxS"] = float64(0)
+
 		totalLatencyStats["count"] = 0
 	}
 
 	// EachPartUploadLatency 통계 결과
 	partLatencyStats := make(map[string]any)
 	if totalPartCount > 0 {
-		partLatencyStats["average"] = sumPartLatency / time.Duration(totalPartCount)
-		partLatencyStats["min"] = minPartLatency
-		partLatencyStats["max"] = maxPartLatency
+		avgPartLatency := sumPartLatency / time.Duration(totalPartCount)
+
+		// 나노초 단위
+		partLatencyStats["averageNS"] = avgPartLatency.Nanoseconds()
+		partLatencyStats["minNS"] = minPartLatency.Nanoseconds()
+		partLatencyStats["maxNS"] = maxPartLatency.Nanoseconds()
+
+		// 밀리초 단위
+		partLatencyStats["averageMS"] = float64(avgPartLatency.Nanoseconds()) / 1e6
+		partLatencyStats["minMS"] = float64(minPartLatency.Nanoseconds()) / 1e6
+		partLatencyStats["maxMS"] = float64(maxPartLatency.Nanoseconds()) / 1e6
+
+		// 초 단위
+		partLatencyStats["averageS"] = float64(avgPartLatency.Nanoseconds()) / 1e9
+		partLatencyStats["minS"] = float64(minPartLatency.Nanoseconds()) / 1e9
+		partLatencyStats["maxS"] = float64(maxPartLatency.Nanoseconds()) / 1e9
+
 		partLatencyStats["count"] = totalPartCount
 	} else {
-		partLatencyStats["average"] = time.Duration(0)
-		partLatencyStats["min"] = time.Duration(0)
-		partLatencyStats["max"] = time.Duration(0)
+
+		// 나노초 단위
+		partLatencyStats["averageNS"] = int64(0)
+		partLatencyStats["minNS"] = int64(0)
+		partLatencyStats["maxNS"] = int64(0)
+
+		// 밀리초 단위
+		partLatencyStats["averageMS"] = float64(0)
+		partLatencyStats["minMS"] = float64(0)
+		partLatencyStats["maxMS"] = float64(0)
+
+		// 초 단위
+		partLatencyStats["averageS"] = float64(0)
+		partLatencyStats["minS"] = float64(0)
+		partLatencyStats["maxS"] = float64(0)
+
 		partLatencyStats["count"] = 0
 	}
 
@@ -290,4 +345,14 @@ func (m *UploadLatencyManager) ClearMetricsAfterStats() {
 
 	klog.Infof("[YBS] Cleared %d completed upload metrics, %d in-progress uploads remain",
 		deletedCount, len(m.multipartUploadMetric))
+}
+
+// ClearAllMetrics clears all metrics regardless of their completion status.
+func (m *UploadLatencyManager) ClearAllMetrics() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.multipartUploadMetric = make(map[string]*MultipartUploadMetric)
+
+	klog.Infof("[YBS] Cleared all %d upload metrics (both completed and in-progress)", len(m.multipartUploadMetric))
 }

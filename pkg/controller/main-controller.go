@@ -1597,6 +1597,17 @@ type CompleteMultipartUploadLatency struct {
 	CompleteTime time.Time `json:"completeTime"`
 }
 
+// ClearAllMetricsHandler clears all metrics
+func (c *Controller) clearAllMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	klog.Info("[YBS] /multipart-upload-latency-clear-all endpoint called")
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	c.uploadLatencyManager.ClearAllMetrics()
+	w.WriteHeader(http.StatusOK)
+}
+
 func (c *Controller) getLatencyStatsHandler(w http.ResponseWriter, r *http.Request) {
 	klog.Info("[YBS] /multipart-upload-latency-stats endpoint called")
 	if r.Method != http.MethodGet {
