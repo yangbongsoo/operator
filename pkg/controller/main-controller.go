@@ -212,6 +212,8 @@ type Controller struct {
 	policyBindingListerSynced cache.InformerSynced
 
 	dynamicClient dynamic.Interface
+
+	uploadLatencyManager *UploadLatencyManager
 }
 
 // EventType is Event type to handle
@@ -294,10 +296,11 @@ func NewController(
 		operatorVersion:           operatorVersion,
 		policyBindingListerSynced: policyBindingInformer.Informer().HasSynced,
 		dynamicClient:             dynamicClient,
+		uploadLatencyManager:      NewUploadLatencyManager(),
 	}
 
 	// Initialize operator HTTP upgrade server handlers
-	controller.us = configureHTTPUpgradeServer(dynamicClient)
+	controller.us = configureHTTPUpgradeServer(controller)
 
 	// Initialize STS API server handlers
 	controller.sts = configureSTSServer(controller)
@@ -1571,10 +1574,10 @@ func processNextItem(workqueue queue.RateLimitingInterface, syncer func(key stri
 
 // RecordMultipartStart is the struct for the record multipart start
 type RecordMultipartStart struct {
-	UploadID   string `json:"uploadID"`
-	Bucket     string `json:"bucket"`
-	Object     string `json:"object"`
-	IsComplete bool   `json:"isComplete"`
+	UploadID  string    `json:"uploadID"`
+	Bucket    string    `json:"bucket"`
+	Object    string    `json:"object"`
+	StartTime time.Time `json:"startTime"`
 }
 
 // MesurePutObjectPartElapsed is the struct for the measure put object part elapsed
@@ -1584,18 +1587,29 @@ type MesurePutObjectPartElapsed struct {
 	Object                string        `json:"object"`
 	PartID                int           `json:"partID"`
 	EachPartUploadLatency time.Duration `json:"eachPartUploadLatency"`
-	IsComplete            bool          `json:"isComplete"`
 }
 
 // CompleteMultipartUploadLatency is the struct for the complete multipart upload latency
 type CompleteMultipartUploadLatency struct {
-	UploadID   string `json:"uploadID"`
-	Bucket     string `json:"bucket"`
-	Object     string `json:"object"`
-	IsComplete bool   `json:"isComplete"`
+	UploadID     string    `json:"uploadID"`
+	Bucket       string    `json:"bucket"`
+	Object       string    `json:"object"`
+	CompleteTime time.Time `json:"completeTime"`
 }
 
-func multipartUploadLatencyStartHandler(w http.ResponseWriter, r *http.Request) {
+func (c *Controller) getLatencyStatsHandler(w http.ResponseWriter, r *http.Request) {
+	klog.Info("[YBS] /multipart-upload-latency-stats endpoint called")
+	stats, err := c.uploadLatencyManager.GetLatencyStats()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get stats: %v", err), http.StatusInternalServerError)
+		return
+	}
+	c.uploadLatencyManager.ClearMetricsAfterStats()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+func (c *Controller) multipartUploadLatencyStartHandler(w http.ResponseWriter, r *http.Request) {
 	klog.Info("[YBS] /multipart-upload-latency-start endpoint called")
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1608,11 +1622,17 @@ func multipartUploadLatencyStartHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	c.uploadLatencyManager.RecordUploadStart(
+		recordMultipartStart.UploadID,
+		recordMultipartStart.Bucket,
+		recordMultipartStart.Object,
+		recordMultipartStart.StartTime,
+	)
 	klog.Infof("[YBS] Received multipart upload latency recordMultipartStart: %+v", recordMultipartStart)
 	w.WriteHeader(http.StatusOK)
 }
 
-func multipartUploadLatencyPartHandler(w http.ResponseWriter, r *http.Request) {
+func (c *Controller) multipartUploadLatencyPartHandler(w http.ResponseWriter, r *http.Request) {
 	klog.Info("[YBS] /multipart-upload-latency-part endpoint called")
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1625,11 +1645,18 @@ func multipartUploadLatencyPartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	c.uploadLatencyManager.RecordPartUpload(
+		mesurePutObjectPartElapsed.UploadID,
+		mesurePutObjectPartElapsed.Bucket,
+		mesurePutObjectPartElapsed.Object,
+		mesurePutObjectPartElapsed.PartID,
+		mesurePutObjectPartElapsed.EachPartUploadLatency,
+	)
 	klog.Infof("[YBS] Received multipart upload latency mesurePutObjectPartElapsed: %+v", mesurePutObjectPartElapsed)
 	w.WriteHeader(http.StatusOK)
 }
 
-func multipartUploadLatencyCompleteHandler(w http.ResponseWriter, r *http.Request) {
+func (c *Controller) multipartUploadLatencyCompleteHandler(w http.ResponseWriter, r *http.Request) {
 	klog.Info("[YBS] /multipart-upload-latency-complete endpoint called")
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1642,6 +1669,12 @@ func multipartUploadLatencyCompleteHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	c.uploadLatencyManager.RecordUploadComplete(
+		completeMultipartUploadLatency.UploadID,
+		completeMultipartUploadLatency.Bucket,
+		completeMultipartUploadLatency.Object,
+		completeMultipartUploadLatency.CompleteTime,
+	)
 	klog.Infof("[YBS] Received multipart upload latency recordMultipartStart: %+v", completeMultipartUploadLatency)
 	w.WriteHeader(http.StatusOK)
 }
@@ -1655,7 +1688,7 @@ type NodeInfo struct {
 	PodStatus  string `json:"podStatus"`
 }
 
-func reportHandler(w http.ResponseWriter, r *http.Request, dynamicClient dynamic.Interface) {
+func (c *Controller) reportHandler(w http.ResponseWriter, r *http.Request) {
 	klog.Info("[YBS] /report endpoint called")
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1680,7 +1713,7 @@ func reportHandler(w http.ResponseWriter, r *http.Request, dynamicClient dynamic
 	klog.Infof("[YBS] Received nodeInfo: Node=%s, NodeStatus=%s, Pod=%s, PodStatus=%s\n",
 		nodeInfo.Node, nodeInfo.NodeStatus, nodeInfo.Pod, nodeInfo.PodStatus)
 
-	updateOrCreateIDCTopology(dynamicClient, nodeInfo)
+	updateOrCreateIDCTopology(c.dynamicClient, nodeInfo)
 
 	w.WriteHeader(http.StatusOK)
 }

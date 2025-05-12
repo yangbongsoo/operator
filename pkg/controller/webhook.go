@@ -18,14 +18,12 @@ import (
 	"net/http"
 	"time"
 
-	"k8s.io/client-go/dynamic"
-
 	"github.com/minio/operator/pkg/common"
 
 	"github.com/gorilla/mux"
 )
 
-func configureHTTPUpgradeServer(dynamicClient dynamic.Interface) *http.Server {
+func configureHTTPUpgradeServer(controller *Controller) *http.Server {
 	router := mux.NewRouter().SkipClean(true).UseEncodedPath()
 
 	router.Methods(http.MethodGet).
@@ -33,20 +31,22 @@ func configureHTTPUpgradeServer(dynamicClient dynamic.Interface) *http.Server {
 		Handler(http.StripPrefix(common.WebhookAPIUpdate, http.FileServer(http.Dir(updatePath))))
 
 	router.HandleFunc("/report", func(w http.ResponseWriter, r *http.Request) {
-		reportHandler(w, r, dynamicClient)
+		controller.reportHandler(w, r)
 	}).Methods(http.MethodPost)
 
 	router.HandleFunc("/multipart-upload-latency-start", func(w http.ResponseWriter, r *http.Request) {
-		multipartUploadLatencyStartHandler(w, r)
+		controller.multipartUploadLatencyStartHandler(w, r)
 	}).Methods(http.MethodPost)
 
 	router.HandleFunc("/multipart-upload-latency-part", func(w http.ResponseWriter, r *http.Request) {
-		multipartUploadLatencyPartHandler(w, r)
+		controller.multipartUploadLatencyPartHandler(w, r)
 	}).Methods(http.MethodPost)
 
 	router.HandleFunc("/multipart-upload-latency-complete", func(w http.ResponseWriter, r *http.Request) {
-		multipartUploadLatencyCompleteHandler(w, r)
+		controller.multipartUploadLatencyCompleteHandler(w, r)
 	}).Methods(http.MethodPost)
+
+	router.HandleFunc("/multipart-upload-latency-stats", controller.getLatencyStatsHandler).Methods(http.MethodGet)
 
 	router.NotFoundHandler = http.NotFoundHandler()
 
