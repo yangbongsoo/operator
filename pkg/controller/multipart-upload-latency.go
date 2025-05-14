@@ -2,6 +2,7 @@ package controller
 
 import (
 	"maps"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -184,6 +185,10 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	isFirst := true
 	isFirstPart := true
 
+	// 표준편차 계산을 위한 제곱합
+	var sumSquaredTotalLatencyMS float64
+	var sumSquaredPartLatencyMS float64
+
 	// 모든 업로드를 순회하며 통계 계산
 	for _, uploadMetric := range m.multipartUploadMetric {
 		// 완료된 업로드만 계산에 포함
@@ -198,6 +203,11 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 			}
 
 			sumTotalLatency += uploadMetric.TotalLatency
+
+			// 표준편차 계산을 위한 제곱합 (밀리초 단위)
+			latencyMS := float64(uploadMetric.TotalLatency.Nanoseconds()) / 1e6
+			sumSquaredTotalLatencyMS += latencyMS * latencyMS
+
 			completedUploadCount++
 			isFirst = false
 
@@ -212,6 +222,11 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 				}
 
 				sumPartLatency += part.EachPartUploadLatency
+
+				// 파트 지연시간 제곱합 (밀리초 단위)
+				partLatencyMS := float64(part.EachPartUploadLatency.Nanoseconds()) / 1e6
+				sumSquaredPartLatencyMS += partLatencyMS * partLatencyMS
+
 				totalPartCount++
 				isFirstPart = false
 			}
@@ -228,9 +243,7 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 				part := uploadMetric.Parts[partID]
 				parts = append(parts, map[string]any{
 					"partID":    part.PartID,
-					"latencyNS": part.EachPartUploadLatency.Nanoseconds(),
 					"latencyMS": float64(part.EachPartUploadLatency.Nanoseconds()) / 1e6,
-					"latencyS":  float64(part.EachPartUploadLatency.Nanoseconds()) / 1e9,
 				})
 			}
 			partDetails[uploadMetric.UploadID] = parts
@@ -241,39 +254,38 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	totalLatencyStats := make(map[string]any)
 	if completedUploadCount > 0 {
 		avgTotalLatency := sumTotalLatency / time.Duration(completedUploadCount)
+		avgTotalLatencyMS := float64(avgTotalLatency.Nanoseconds()) / 1e6
 
-		// 나노초 단위
-		totalLatencyStats["averageNS"] = avgTotalLatency.Nanoseconds()
-		totalLatencyStats["minNS"] = minTotalLatency.Nanoseconds()
-		totalLatencyStats["maxNS"] = maxTotalLatency.Nanoseconds()
+		// 분산 계산
+		varianceMS := (sumSquaredTotalLatencyMS / float64(completedUploadCount)) - (avgTotalLatencyMS * avgTotalLatencyMS)
+		if varianceMS < 0 {
+			// 수치적 오류로 음수가 나올 경우 0으로 처리
+			varianceMS = 0
+		}
+		// 표준편차 계산
+		stdDevMS := math.Sqrt(varianceMS)
 
-		// 밀리초 단위
-		totalLatencyStats["averageMS"] = float64(avgTotalLatency.Nanoseconds()) / 1e6
+		// 95% 신뢰구간 계산
+		standardErrorMS := stdDevMS / math.Sqrt(float64(completedUploadCount))
+		ci95LowerMS := avgTotalLatencyMS - 1.96*standardErrorMS
+		ci95UpperMS := avgTotalLatencyMS + 1.96*standardErrorMS
+
+		// 밀리초 단위만 유지
+		totalLatencyStats["averageMS"] = avgTotalLatencyMS
 		totalLatencyStats["minMS"] = float64(minTotalLatency.Nanoseconds()) / 1e6
 		totalLatencyStats["maxMS"] = float64(maxTotalLatency.Nanoseconds()) / 1e6
-
-		// 초 단위
-		totalLatencyStats["averageS"] = float64(avgTotalLatency.Nanoseconds()) / 1e9
-		totalLatencyStats["minS"] = float64(minTotalLatency.Nanoseconds()) / 1e9
-		totalLatencyStats["maxS"] = float64(maxTotalLatency.Nanoseconds()) / 1e9
-
+		totalLatencyStats["stdDevMS"] = stdDevMS
+		totalLatencyStats["ci95LowerMS"] = ci95LowerMS
+		totalLatencyStats["ci95UpperMS"] = ci95UpperMS
 		totalLatencyStats["count"] = completedUploadCount
 	} else {
-		// 나노초 단위
-		totalLatencyStats["averageNS"] = int64(0)
-		totalLatencyStats["minNS"] = int64(0)
-		totalLatencyStats["maxNS"] = int64(0)
-
-		// 밀리초 단위
+		// 밀리초 단위만 유지
 		totalLatencyStats["averageMS"] = float64(0)
 		totalLatencyStats["minMS"] = float64(0)
 		totalLatencyStats["maxMS"] = float64(0)
-
-		// 초 단위
-		totalLatencyStats["averageS"] = float64(0)
-		totalLatencyStats["minS"] = float64(0)
-		totalLatencyStats["maxS"] = float64(0)
-
+		totalLatencyStats["stdDevMS"] = float64(0)
+		totalLatencyStats["ci95LowerMS"] = float64(0)
+		totalLatencyStats["ci95UpperMS"] = float64(0)
 		totalLatencyStats["count"] = 0
 	}
 
@@ -281,40 +293,38 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	partLatencyStats := make(map[string]any)
 	if totalPartCount > 0 {
 		avgPartLatency := sumPartLatency / time.Duration(totalPartCount)
+		avgPartLatencyMS := float64(avgPartLatency.Nanoseconds()) / 1e6
 
-		// 나노초 단위
-		partLatencyStats["averageNS"] = avgPartLatency.Nanoseconds()
-		partLatencyStats["minNS"] = minPartLatency.Nanoseconds()
-		partLatencyStats["maxNS"] = maxPartLatency.Nanoseconds()
+		// 분산 계산
+		partVarianceMS := (sumSquaredPartLatencyMS / float64(totalPartCount)) - (avgPartLatencyMS * avgPartLatencyMS)
+		if partVarianceMS < 0 {
+			// 수치적 오류로 음수가 나올 경우 0으로 처리
+			partVarianceMS = 0
+		}
+		// 표준편차 계산
+		partStdDevMS := math.Sqrt(partVarianceMS)
 
-		// 밀리초 단위
-		partLatencyStats["averageMS"] = float64(avgPartLatency.Nanoseconds()) / 1e6
+		// 95% 신뢰구간 계산
+		partStandardErrorMS := partStdDevMS / math.Sqrt(float64(totalPartCount))
+		partCi95LowerMS := avgPartLatencyMS - 1.96*partStandardErrorMS
+		partCi95UpperMS := avgPartLatencyMS + 1.96*partStandardErrorMS
+
+		// 밀리초 단위만 유지
+		partLatencyStats["averageMS"] = avgPartLatencyMS
 		partLatencyStats["minMS"] = float64(minPartLatency.Nanoseconds()) / 1e6
 		partLatencyStats["maxMS"] = float64(maxPartLatency.Nanoseconds()) / 1e6
-
-		// 초 단위
-		partLatencyStats["averageS"] = float64(avgPartLatency.Nanoseconds()) / 1e9
-		partLatencyStats["minS"] = float64(minPartLatency.Nanoseconds()) / 1e9
-		partLatencyStats["maxS"] = float64(maxPartLatency.Nanoseconds()) / 1e9
-
+		partLatencyStats["stdDevMS"] = partStdDevMS
+		partLatencyStats["ci95LowerMS"] = partCi95LowerMS
+		partLatencyStats["ci95UpperMS"] = partCi95UpperMS
 		partLatencyStats["count"] = totalPartCount
 	} else {
-
-		// 나노초 단위
-		partLatencyStats["averageNS"] = int64(0)
-		partLatencyStats["minNS"] = int64(0)
-		partLatencyStats["maxNS"] = int64(0)
-
-		// 밀리초 단위
+		// 밀리초 단위만 유지
 		partLatencyStats["averageMS"] = float64(0)
 		partLatencyStats["minMS"] = float64(0)
 		partLatencyStats["maxMS"] = float64(0)
-
-		// 초 단위
-		partLatencyStats["averageS"] = float64(0)
-		partLatencyStats["minS"] = float64(0)
-		partLatencyStats["maxS"] = float64(0)
-
+		partLatencyStats["stdDevMS"] = float64(0)
+		partLatencyStats["ci95LowerMS"] = float64(0)
+		partLatencyStats["ci95UpperMS"] = float64(0)
 		partLatencyStats["count"] = 0
 	}
 
