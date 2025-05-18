@@ -365,34 +365,34 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 		}
 
 		tagStats := make(map[string]any)
-		var tagSum time.Duration
-		var tagMin time.Duration
-		var tagMax time.Duration
+		var tagTotalLatency time.Duration
+		var tagMinLatency time.Duration
+		var tagMaxLatency time.Duration
 		isFirstTag := true
 
 		for _, latency := range latencies {
-			if isFirstTag || latency < tagMin {
-				tagMin = latency
+			if isFirstTag || latency < tagMinLatency {
+				tagMinLatency = latency
 			}
 
-			if isFirstTag || latency > tagMax {
-				tagMax = latency
+			if isFirstTag || latency > tagMaxLatency {
+				tagMaxLatency = latency
 			}
 
-			tagSum += latency
+			tagTotalLatency += latency
 			totalActiveInfoLatency += latency
 			isFirstTag = false
 			totalActiveInfoCount++
 		}
 
-		avgTagLatency := tagSum / time.Duration(len(latencies))
+		avgTagLatency := tagTotalLatency / time.Duration(len(latencies))
 		avgTagLatencyMS := float64(avgTagLatency.Nanoseconds()) / 1e6
 
 		tagStats["count"] = len(latencies)
-		tagStats["sumMS"] = float64(tagSum.Nanoseconds()) / 1e6
+		tagStats["sumMS"] = float64(tagTotalLatency.Nanoseconds()) / 1e6
 		tagStats["averageMS"] = avgTagLatencyMS
-		tagStats["minMS"] = float64(tagMin.Nanoseconds()) / 1e6
-		tagStats["maxMS"] = float64(tagMax.Nanoseconds()) / 1e6
+		tagStats["minMS"] = float64(tagMinLatency.Nanoseconds()) / 1e6
+		tagStats["maxMS"] = float64(tagMaxLatency.Nanoseconds()) / 1e6
 
 		tagLatencyStats[tag] = tagStats
 	}
