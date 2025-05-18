@@ -15,6 +15,7 @@ type UploadLatencyManager struct {
 	mu sync.RWMutex
 
 	multipartUploadMetric map[string]*MultipartUploadMetric
+	getActiveInfoLatency  map[string][]time.Duration
 }
 
 // MultipartUploadMetric is all information about a multipart upload.
@@ -41,7 +42,28 @@ type PartInfo struct {
 func NewUploadLatencyManager() *UploadLatencyManager {
 	return &UploadLatencyManager{
 		multipartUploadMetric: make(map[string]*MultipartUploadMetric),
+		getActiveInfoLatency:  make(map[string][]time.Duration),
 	}
+}
+
+// RecordGetActiveInfoLatency records the latency of getting active info.
+func (m *UploadLatencyManager) RecordGetActiveInfoLatency(tag string, latency time.Duration) {
+	if tag == "" {
+		klog.Warningf("[YBS] Empty tag provided for active info latency record, ignoring")
+		return
+	}
+
+	if latency <= 0 {
+		klog.Warningf("[YBS] Invalid latency value (%v) for tag %s, ignoring", latency, tag)
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.getActiveInfoLatency[tag] = append(m.getActiveInfoLatency[tag], latency)
+	klog.Infof("[YBS] Recorded get active info latency - Tag: %s, Latency: %v, Total records: %d",
+		tag, latency, len(m.getActiveInfoLatency[tag]))
 }
 
 // RecordUploadStart records the start of a multipart upload.
@@ -252,9 +274,11 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 
 	// TotalLatency 통계 결과
 	totalLatencyStats := make(map[string]any)
+	var avgTotalLatencyMS float64
+
 	if completedUploadCount > 0 {
 		avgTotalLatency := sumTotalLatency / time.Duration(completedUploadCount)
-		avgTotalLatencyMS := float64(avgTotalLatency.Nanoseconds()) / 1e6
+		avgTotalLatencyMS = float64(avgTotalLatency.Nanoseconds()) / 1e6
 
 		// 분산 계산
 		varianceMS := (sumSquaredTotalLatencyMS / float64(completedUploadCount)) - (avgTotalLatencyMS * avgTotalLatencyMS)
@@ -328,9 +352,80 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 		partLatencyStats["count"] = 0
 	}
 
+	// getActiveInfoLatency 통계 계산
+	activeInfoLatencyStats := make(map[string]any)
+	tagLatencyStats := make(map[string]map[string]any)
+	var totalActiveInfoLatency time.Duration
+	totalActiveInfoCount := 0
+
+	// 각 태그별 지연 시간 합계 및 통계 계산
+	for tag, latencies := range m.getActiveInfoLatency {
+		if len(latencies) == 0 {
+			continue
+		}
+
+		tagStats := make(map[string]any)
+		var tagSum time.Duration
+		var tagMin time.Duration
+		var tagMax time.Duration
+		isFirstTag := true
+
+		for _, latency := range latencies {
+			if isFirstTag || latency < tagMin {
+				tagMin = latency
+			}
+
+			if isFirstTag || latency > tagMax {
+				tagMax = latency
+			}
+
+			tagSum += latency
+			totalActiveInfoLatency += latency
+			isFirstTag = false
+			totalActiveInfoCount++
+		}
+
+		avgTagLatency := tagSum / time.Duration(len(latencies))
+		avgTagLatencyMS := float64(avgTagLatency.Nanoseconds()) / 1e6
+
+		tagStats["count"] = len(latencies)
+		tagStats["sumMS"] = float64(tagSum.Nanoseconds()) / 1e6
+		tagStats["averageMS"] = avgTagLatencyMS
+		tagStats["minMS"] = float64(tagMin.Nanoseconds()) / 1e6
+		tagStats["maxMS"] = float64(tagMax.Nanoseconds()) / 1e6
+
+		tagLatencyStats[tag] = tagStats
+	}
+
+	// 전체 getActiveInfoLatency 통계
+	if totalActiveInfoCount > 0 {
+		avgActiveInfoLatency := totalActiveInfoLatency / time.Duration(totalActiveInfoCount)
+		avgActiveInfoLatencyMS := float64(avgActiveInfoLatency.Nanoseconds()) / 1e6
+
+		activeInfoLatencyStats["totalSumMS"] = float64(totalActiveInfoLatency.Nanoseconds()) / 1e6
+		activeInfoLatencyStats["averageMS"] = avgActiveInfoLatencyMS
+		activeInfoLatencyStats["count"] = totalActiveInfoCount
+
+		// avgTotalLatencyMS 대비 getActiveInfoLatency의 비율 계산 (completedUploadCount > 0인 경우만)
+		if completedUploadCount > 0 && avgTotalLatencyMS > 0 {
+			percentage := (avgActiveInfoLatencyMS / avgTotalLatencyMS) * 100
+			activeInfoLatencyStats["percentageOfTotalLatency"] = percentage
+		} else {
+			activeInfoLatencyStats["percentageOfTotalLatency"] = float64(0)
+		}
+	} else {
+		activeInfoLatencyStats["totalSumMS"] = float64(0)
+		activeInfoLatencyStats["averageMS"] = float64(0)
+		activeInfoLatencyStats["count"] = 0
+		activeInfoLatencyStats["percentageOfTotalLatency"] = float64(0)
+	}
+
+	activeInfoLatencyStats["tagStats"] = tagLatencyStats
+
 	// 결과 맵 구성
 	stats["totalLatency"] = totalLatencyStats
 	stats["partLatency"] = partLatencyStats
+	stats["activeInfoLatency"] = activeInfoLatencyStats
 
 	// 추가 정보
 	stats["multipartUploadMetricCount"] = len(m.multipartUploadMetric)
@@ -353,7 +448,8 @@ func (m *UploadLatencyManager) ClearMetricsAfterStats() {
 		}
 	}
 
-	klog.Infof("[YBS] Cleared %d completed upload metrics, %d in-progress uploads remain",
+	m.getActiveInfoLatency = make(map[string][]time.Duration)
+	klog.Infof("[YBS] Cleared %d completed upload metrics and all active info latency records, %d in-progress uploads remain",
 		deletedCount, len(m.multipartUploadMetric))
 }
 
@@ -363,6 +459,7 @@ func (m *UploadLatencyManager) ClearAllMetrics() {
 	defer m.mu.Unlock()
 
 	m.multipartUploadMetric = make(map[string]*MultipartUploadMetric)
+	m.getActiveInfoLatency = make(map[string][]time.Duration)
 
-	klog.Infof("[YBS] Cleared all %d upload metrics (both completed and in-progress)", len(m.multipartUploadMetric))
+	klog.Infof("[YBS] Cleared all upload metrics (both completed and in-progress) and all active info latency records")
 }

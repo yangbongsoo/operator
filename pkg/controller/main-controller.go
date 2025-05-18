@@ -1572,6 +1572,12 @@ func processNextItem(workqueue queue.RateLimitingInterface, syncer func(key stri
 	return true
 }
 
+// MesureGetActiveInfo is the struct for the measure get active info
+type MesureGetActiveInfo struct {
+	Tag     string        `json:"tag"`
+	Latency time.Duration `json:"latency"`
+}
+
 // RecordMultipartStart is the struct for the record multipart start
 type RecordMultipartStart struct {
 	UploadID  string    `json:"uploadID"`
@@ -1623,6 +1629,27 @@ func (c *Controller) getLatencyStatsHandler(w http.ResponseWriter, r *http.Reque
 	c.uploadLatencyManager.ClearMetricsAfterStats()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
+}
+
+func (c *Controller) getActiveInfoLatencyHandler(w http.ResponseWriter, r *http.Request) {
+	klog.Info("[YBS] /get-active-info-latency endpoint called")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var mesureGetActiveInfo MesureGetActiveInfo
+	if err := json.NewDecoder(r.Body).Decode(&mesureGetActiveInfo); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	c.uploadLatencyManager.RecordGetActiveInfoLatency(
+		mesureGetActiveInfo.Tag,
+		mesureGetActiveInfo.Latency,
+	)
+	klog.Infof("[YBS] Received get active info latency: %+v", mesureGetActiveInfo)
+	w.WriteHeader(http.StatusOK)
 }
 
 func (c *Controller) multipartUploadLatencyStartHandler(w http.ResponseWriter, r *http.Request) {

@@ -50,6 +50,8 @@ func configureHTTPUpgradeServer(controller *Controller) *http.Server {
 
 	router.HandleFunc("/multipart-upload-latency-clear-all", controller.clearAllMetricsHandler).Methods(http.MethodGet)
 
+	router.HandleFunc("/get-active-info-latency", controller.getActiveInfoLatencyHandler).Methods(http.MethodPost)
+
 	router.NotFoundHandler = http.NotFoundHandler()
 
 	s := &http.Server{
