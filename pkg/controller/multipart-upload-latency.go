@@ -14,8 +14,10 @@ import (
 type UploadLatencyManager struct {
 	mu sync.RWMutex
 
-	multipartUploadMetric map[string]*MultipartUploadMetric
-	getActiveInfoLatency  map[string][]time.Duration
+	multipartUploadMetric      map[string]*MultipartUploadMetric
+	getActiveInfoLatency       map[string][]time.Duration
+	checkUploadIDExistsLatency map[string][]time.Duration
+	readAllFileInfoLatency     map[string][]time.Duration
 }
 
 // MultipartUploadMetric is all information about a multipart upload.
@@ -41,9 +43,61 @@ type PartInfo struct {
 // NewUploadLatencyManager creates a new UploadLatencyManager.
 func NewUploadLatencyManager() *UploadLatencyManager {
 	return &UploadLatencyManager{
-		multipartUploadMetric: make(map[string]*MultipartUploadMetric),
-		getActiveInfoLatency:  make(map[string][]time.Duration),
+		multipartUploadMetric:      make(map[string]*MultipartUploadMetric),
+		getActiveInfoLatency:       make(map[string][]time.Duration),
+		checkUploadIDExistsLatency: make(map[string][]time.Duration),
+		readAllFileInfoLatency:     make(map[string][]time.Duration),
 	}
+}
+
+// RecordCheckUploadIDExistsLatency records the latency of checking upload id exists.
+func (m *UploadLatencyManager) RecordCheckUploadIDExistsLatency(uploadID, bucket, object string, latency time.Duration) {
+	if uploadID == "" {
+		klog.Warningf("[YBS] Empty uploadID provided for checkUploadIDExists latency record, ignoring")
+		return
+	}
+
+	if bucket == "" || object == "" {
+		klog.Warningf("[YBS] Empty bucket or object provided for checkUploadIDExists latency record - UploadID: %s, ignoring",
+			uploadID)
+		return
+	}
+
+	if latency <= 0 {
+		klog.Warningf("[YBS] Invalid latency value (%v) for uploadID %s, ignoring", latency, uploadID)
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.checkUploadIDExistsLatency[uploadID] = append(m.checkUploadIDExistsLatency[uploadID], latency)
+
+	klog.Infof("[YBS] Recorded checkUploadID exists latency - UploadID: %s, Latency: %v, Total records: %d",
+		uploadID, latency, len(m.checkUploadIDExistsLatency[uploadID]))
+}
+
+// RecordReadAllFileInfoLatency records the latency of reading all file info.
+func (m *UploadLatencyManager) RecordReadAllFileInfoLatency(bucket, object string, latency time.Duration) {
+	if bucket == "" || object == "" {
+		klog.Warningf("[YBS] Empty bucket or object provided for readAllFileInfo latency record, ignoring - Bucket: %s, Object: %s",
+			bucket, object)
+		return
+	}
+
+	if latency <= 0 {
+		klog.Warningf("[YBS] Invalid latency value (%v) for readAllFileInfo - Bucket: %s, Object: %s, ignoring",
+			latency, bucket, object)
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := bucket + "/" + object
+
+	m.readAllFileInfoLatency[key] = append(m.readAllFileInfoLatency[key], latency)
+	klog.Infof("[YBS] Recorded read all file info latency - Bucket: %s, Object: %s, Latency: %v, Total records: %d",
+		bucket, object, latency, len(m.readAllFileInfoLatency[key]))
 }
 
 // RecordGetActiveInfoLatency records the latency of getting active info.
@@ -315,9 +369,11 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 
 	// EachPartUploadLatency 통계 결과
 	partLatencyStats := make(map[string]any)
+	var avgPartLatencyMS float64
+
 	if totalPartCount > 0 {
 		avgPartLatency := sumPartLatency / time.Duration(totalPartCount)
-		avgPartLatencyMS := float64(avgPartLatency.Nanoseconds()) / 1e6
+		avgPartLatencyMS = float64(avgPartLatency.Nanoseconds()) / 1e6
 
 		// 분산 계산
 		partVarianceMS := (sumSquaredPartLatencyMS / float64(totalPartCount)) - (avgPartLatencyMS * avgPartLatencyMS)
@@ -422,10 +478,224 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 
 	activeInfoLatencyStats["tagStats"] = tagLatencyStats
 
+	// checkUploadIDExistsLatency 통계 계산
+	checkUploadIDLatencyStats := make(map[string]any)
+	checkUploadIDLatencyDetails := make(map[string]map[string]any)
+	var totalCheckUploadIDLatency time.Duration
+	totalCheckUploadIDCount := 0
+
+	// 업로드ID별 지연 시간 합계 및 통계 계산
+	for uploadID, latencies := range m.checkUploadIDExistsLatency {
+		if len(latencies) == 0 {
+			continue
+		}
+
+		// 해당 uploadID에 대한 업로드 정보 가져오기
+		uploadMetric, exists := m.multipartUploadMetric[uploadID]
+		if !exists || !uploadMetric.IsComplete {
+			continue // 완료된 업로드만 포함
+		}
+
+		uploadStats := make(map[string]any)
+		var uploadTotalLatency time.Duration
+		var uploadMinLatency time.Duration
+		var uploadMaxLatency time.Duration
+		isFirstUpload := true
+
+		for _, latency := range latencies {
+			if isFirstUpload || latency < uploadMinLatency {
+				uploadMinLatency = latency
+			}
+
+			if isFirstUpload || latency > uploadMaxLatency {
+				uploadMaxLatency = latency
+			}
+
+			uploadTotalLatency += latency
+			totalCheckUploadIDLatency += latency
+			isFirstUpload = false
+			totalCheckUploadIDCount++
+		}
+
+		// 업로드별 통계 계산
+		avgUploadLatency := uploadTotalLatency / time.Duration(len(latencies))
+		avgUploadLatencyMS := float64(avgUploadLatency.Nanoseconds()) / 1e6
+
+		// 업로드별 지연 시간 통계
+		uploadStats["count"] = len(latencies)
+		uploadStats["sumMS"] = float64(uploadTotalLatency.Nanoseconds()) / 1e6
+		uploadStats["averageMS"] = avgUploadLatencyMS
+		uploadStats["minMS"] = float64(uploadMinLatency.Nanoseconds()) / 1e6
+		uploadStats["maxMS"] = float64(uploadMaxLatency.Nanoseconds()) / 1e6
+
+		// 업로드별 전체 업로드 대비 비율 (해당 업로드의 TotalLatency 대비)
+		if uploadMetric.TotalLatency > 0 {
+			uploadTotalLatencyMS := float64(uploadMetric.TotalLatency.Nanoseconds()) / 1e6
+			// 체크 지연시간 총합을 밀리초로 변환
+			uploadCheckTotalLatencyMS := float64(uploadTotalLatency.Nanoseconds()) / 1e6
+			// 전체 업로드 지연시간 대비 체크 지연시간의 비율 계산
+			percentage := (uploadCheckTotalLatencyMS * 100) / uploadTotalLatencyMS
+			uploadStats["percentageOfCheckUploadIDLatency"] = percentage
+		} else {
+			uploadStats["percentageOfCheckUploadIDLatency"] = float64(0)
+		}
+
+		// 파트별 통계 계산 (해당 업로드의 각 파트 대비)
+		if len(uploadMetric.Parts) > 0 {
+			partPercentages := make(map[int]float64)
+
+			for partID, part := range uploadMetric.Parts {
+				partLatencyMS := float64(part.EachPartUploadLatency.Nanoseconds()) / 1e6
+				if partLatencyMS > 0 {
+					// 파트별 지연시간 대비 체크 지연시간의 비율 계산
+					partPercentage := (avgUploadLatencyMS * 100) / partLatencyMS
+					partPercentages[partID] = partPercentage
+				} else {
+					partPercentages[partID] = 0
+				}
+			}
+
+			uploadStats["partPercentages"] = partPercentages
+		}
+
+		checkUploadIDLatencyDetails[uploadID] = uploadStats
+	}
+
+	// 전체 checkUploadIDExistsLatency 통계
+	if totalCheckUploadIDCount > 0 {
+		avgCheckUploadIDLatency := totalCheckUploadIDLatency / time.Duration(totalCheckUploadIDCount)
+		avgCheckUploadIDLatencyMS := float64(avgCheckUploadIDLatency.Nanoseconds()) / 1e6
+
+		checkUploadIDLatencyStats["totalSumMS"] = float64(totalCheckUploadIDLatency.Nanoseconds()) / 1e6
+		checkUploadIDLatencyStats["averageMS"] = avgCheckUploadIDLatencyMS
+		checkUploadIDLatencyStats["count"] = totalCheckUploadIDCount
+
+		// 전체 업로드 대비 비율 (TotalLatency 대비)
+		if completedUploadCount > 0 && avgTotalLatencyMS > 0 {
+			percentage := (avgCheckUploadIDLatencyMS * 100) / avgTotalLatencyMS
+			checkUploadIDLatencyStats["percentageOfTotalLatency"] = percentage
+		} else {
+			checkUploadIDLatencyStats["percentageOfTotalLatency"] = float64(0)
+		}
+
+		// 파트 업로드 대비 비율 (PartLatency 대비)
+		if totalPartCount > 0 && avgPartLatencyMS > 0 {
+			percentage := (avgCheckUploadIDLatencyMS * 100) / avgPartLatencyMS
+			checkUploadIDLatencyStats["percentageOfPartLatency"] = percentage
+		} else {
+			checkUploadIDLatencyStats["percentageOfPartLatency"] = float64(0)
+		}
+	} else {
+		checkUploadIDLatencyStats["totalSumMS"] = float64(0)
+		checkUploadIDLatencyStats["averageMS"] = float64(0)
+		checkUploadIDLatencyStats["count"] = 0
+		checkUploadIDLatencyStats["percentageOfTotalLatency"] = float64(0)
+		checkUploadIDLatencyStats["percentageOfPartLatency"] = float64(0)
+	}
+
+	checkUploadIDLatencyStats["checkUploadIDStats"] = checkUploadIDLatencyDetails
+
+	// readAllFileInfoLatency 통계 계산
+	readAllFileInfoLatencyStats := make(map[string]any)
+	readAllFileInfoLatencyDetails := make(map[string]map[string]any)
+	var totalReadAllFileInfoLatency time.Duration
+	totalReadAllFileInfoCount := 0
+
+	// bucket/object별 지연 시간 합계 및 통계 계산
+	for key, latencies := range m.readAllFileInfoLatency {
+		if len(latencies) == 0 {
+			continue
+		}
+
+		readAllFileInfoStats := make(map[string]any)
+		var readAllFileInfoTotalLatency time.Duration
+		var readAllFileInfoMinLatency time.Duration
+		var readAllFileInfoMaxLatency time.Duration
+		isFirstReadAllFileInfo := true
+
+		for _, latency := range latencies {
+			if isFirstReadAllFileInfo || latency < readAllFileInfoMinLatency {
+				readAllFileInfoMinLatency = latency
+			}
+
+			if isFirstReadAllFileInfo || latency > readAllFileInfoMaxLatency {
+				readAllFileInfoMaxLatency = latency
+			}
+
+			readAllFileInfoTotalLatency += latency
+			totalReadAllFileInfoLatency += latency
+			isFirstReadAllFileInfo = false
+			totalReadAllFileInfoCount++
+		}
+
+		avgReadAllFileInfoLatency := readAllFileInfoTotalLatency / time.Duration(len(latencies))
+		avgReadAllFileInfoLatencyMS := float64(avgReadAllFileInfoLatency.Nanoseconds()) / 1e6
+
+		readAllFileInfoStats["count"] = len(latencies)
+		readAllFileInfoStats["sumMS"] = float64(readAllFileInfoTotalLatency.Nanoseconds()) / 1e6
+		readAllFileInfoStats["averageMS"] = avgReadAllFileInfoLatencyMS
+		readAllFileInfoStats["minMS"] = float64(readAllFileInfoMinLatency.Nanoseconds()) / 1e6
+		readAllFileInfoStats["maxMS"] = float64(readAllFileInfoMaxLatency.Nanoseconds()) / 1e6
+
+		readAllFileInfoLatencyDetails[key] = readAllFileInfoStats
+	}
+
+	// 전체 readAllFileInfoLatency 통계
+	if totalReadAllFileInfoCount > 0 {
+		avgReadAllFileInfoLatency := totalReadAllFileInfoLatency / time.Duration(totalReadAllFileInfoCount)
+		avgReadAllFileInfoLatencyMS := float64(avgReadAllFileInfoLatency.Nanoseconds()) / 1e6
+
+		readAllFileInfoLatencyStats["totalSumMS"] = float64(totalReadAllFileInfoLatency.Nanoseconds()) / 1e6
+		readAllFileInfoLatencyStats["averageMS"] = avgReadAllFileInfoLatencyMS
+		readAllFileInfoLatencyStats["count"] = totalReadAllFileInfoCount
+
+		// checkUploadIDExistsLatency와의 비율 계산
+		// - checkUploadIDExistsLatency 평균 대비 readAllFileInfoLatency 평균의 비율
+		avgCheckUploadIDLatencyMS := float64(0)
+		if totalCheckUploadIDCount > 0 {
+			avgCheckUploadIDLatency := totalCheckUploadIDLatency / time.Duration(totalCheckUploadIDCount)
+			avgCheckUploadIDLatencyMS = float64(avgCheckUploadIDLatency.Nanoseconds()) / 1e6
+		}
+
+		if avgCheckUploadIDLatencyMS > 0 {
+			percentage := (avgReadAllFileInfoLatencyMS * 100) / avgCheckUploadIDLatencyMS
+			readAllFileInfoLatencyStats["percentageOfCheckUploadIDLatency"] = percentage
+		} else {
+			readAllFileInfoLatencyStats["percentageOfCheckUploadIDLatency"] = float64(0)
+		}
+
+		// 전체 업로드 대비 비율 (TotalLatency 대비)
+		if completedUploadCount > 0 && avgTotalLatencyMS > 0 {
+			percentage := (avgReadAllFileInfoLatencyMS * 100) / avgTotalLatencyMS
+			readAllFileInfoLatencyStats["percentageOfTotalLatency"] = percentage
+		} else {
+			readAllFileInfoLatencyStats["percentageOfTotalLatency"] = float64(0)
+		}
+
+		// 파트 업로드 대비 비율 (PartLatency 대비)
+		if totalPartCount > 0 && avgPartLatencyMS > 0 {
+			percentage := (avgReadAllFileInfoLatencyMS * 100) / avgPartLatencyMS
+			readAllFileInfoLatencyStats["percentageOfPartLatency"] = percentage
+		} else {
+			readAllFileInfoLatencyStats["percentageOfPartLatency"] = float64(0)
+		}
+	} else {
+		readAllFileInfoLatencyStats["totalSumMS"] = float64(0)
+		readAllFileInfoLatencyStats["averageMS"] = float64(0)
+		readAllFileInfoLatencyStats["count"] = 0
+		readAllFileInfoLatencyStats["percentageOfCheckUploadIDLatency"] = float64(0)
+		readAllFileInfoLatencyStats["percentageOfTotalLatency"] = float64(0)
+		readAllFileInfoLatencyStats["percentageOfPartLatency"] = float64(0)
+	}
+
+	readAllFileInfoLatencyStats["readAllFileInfoStats"] = readAllFileInfoLatencyDetails
+
 	// 결과 맵 구성
 	stats["totalLatency"] = totalLatencyStats
 	stats["partLatency"] = partLatencyStats
 	stats["activeInfoLatency"] = activeInfoLatencyStats
+	stats["checkUploadIDExistsLatency"] = checkUploadIDLatencyStats
+	stats["readAllFileInfoLatency"] = readAllFileInfoLatencyStats
 
 	// 추가 정보
 	stats["multipartUploadMetricCount"] = len(m.multipartUploadMetric)
@@ -444,12 +714,20 @@ func (m *UploadLatencyManager) ClearMetricsAfterStats() {
 	for uploadID, uploadMetric := range m.multipartUploadMetric {
 		if uploadMetric.IsComplete {
 			delete(m.multipartUploadMetric, uploadID)
+			delete(m.checkUploadIDExistsLatency, uploadID)
 			deletedCount++
 		}
 	}
 
-	m.getActiveInfoLatency = make(map[string][]time.Duration)
-	klog.Infof("[YBS] Cleared %d completed upload metrics and all active info latency records, %d in-progress uploads remain",
+	for tag := range m.getActiveInfoLatency {
+		delete(m.getActiveInfoLatency, tag)
+	}
+
+	for key := range m.readAllFileInfoLatency {
+		delete(m.readAllFileInfoLatency, key)
+	}
+
+	klog.Infof("[YBS] Cleared %d completed upload metrics and all latency records, %d in-progress uploads remain",
 		deletedCount, len(m.multipartUploadMetric))
 }
 
@@ -460,6 +738,8 @@ func (m *UploadLatencyManager) ClearAllMetrics() {
 
 	m.multipartUploadMetric = make(map[string]*MultipartUploadMetric)
 	m.getActiveInfoLatency = make(map[string][]time.Duration)
+	m.checkUploadIDExistsLatency = make(map[string][]time.Duration)
+	m.readAllFileInfoLatency = make(map[string][]time.Duration)
 
-	klog.Infof("[YBS] Cleared all upload metrics (both completed and in-progress) and all active info latency records")
+	klog.Infof("[YBS] Cleared all upload metrics (both completed and in-progress) and all latency records")
 }
