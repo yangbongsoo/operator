@@ -570,17 +570,21 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 		checkUploadIDLatencyStats["averageMS"] = avgCheckUploadIDLatencyMS
 		checkUploadIDLatencyStats["count"] = totalCheckUploadIDCount
 
-		// 전체 업로드 대비 비율 (TotalLatency 대비)
-		if completedUploadCount > 0 && avgTotalLatencyMS > 0 {
-			percentage := (avgCheckUploadIDLatencyMS * 100) / avgTotalLatencyMS
+		// 전체 업로드 대비 비율 (TotalLatency 대비) - 총합 기준으로 계산
+		if completedUploadCount > 0 && sumTotalLatency > 0 {
+			totalCheckLatencyMS := float64(totalCheckUploadIDLatency.Nanoseconds()) / 1e6
+			totalUploadLatencyMS := float64(sumTotalLatency.Nanoseconds()) / 1e6
+			percentage := (totalCheckLatencyMS * 100) / totalUploadLatencyMS
 			checkUploadIDLatencyStats["percentageOfTotalLatency"] = percentage
 		} else {
 			checkUploadIDLatencyStats["percentageOfTotalLatency"] = float64(0)
 		}
 
-		// 파트 업로드 대비 비율 (PartLatency 대비)
-		if totalPartCount > 0 && avgPartLatencyMS > 0 {
-			percentage := (avgCheckUploadIDLatencyMS * 100) / avgPartLatencyMS
+		// 파트 업로드 대비 비율 (PartLatency 대비) - 총합 기준으로 계산
+		if totalPartCount > 0 && sumPartLatency > 0 {
+			totalCheckLatencyMS := float64(totalCheckUploadIDLatency.Nanoseconds()) / 1e6
+			totalPartLatencyMS := float64(sumPartLatency.Nanoseconds()) / 1e6
+			percentage := (totalCheckLatencyMS * 100) / totalPartLatencyMS
 			checkUploadIDLatencyStats["percentageOfPartLatency"] = percentage
 		} else {
 			checkUploadIDLatencyStats["percentageOfPartLatency"] = float64(0)
@@ -649,32 +653,32 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 		readAllFileInfoLatencyStats["averageMS"] = avgReadAllFileInfoLatencyMS
 		readAllFileInfoLatencyStats["count"] = totalReadAllFileInfoCount
 
-		// checkUploadIDExistsLatency와의 비율 계산
-		// - checkUploadIDExistsLatency 평균 대비 readAllFileInfoLatency 평균의 비율
-		avgCheckUploadIDLatencyMS := float64(0)
-		if totalCheckUploadIDCount > 0 {
-			avgCheckUploadIDLatency := totalCheckUploadIDLatency / time.Duration(totalCheckUploadIDCount)
-			avgCheckUploadIDLatencyMS = float64(avgCheckUploadIDLatency.Nanoseconds()) / 1e6
-		}
-
-		if avgCheckUploadIDLatencyMS > 0 {
-			percentage := (avgReadAllFileInfoLatencyMS * 100) / avgCheckUploadIDLatencyMS
+		// checkUploadIDExistsLatency와의 비율 계산 - 총합 기준으로 계산
+		// - checkUploadIDExistsLatency 총 지연시간 대비 readAllFileInfoLatency 총 지연시간의 비율
+		if totalCheckUploadIDCount > 0 && totalCheckUploadIDLatency > 0 {
+			totalReadLatencyMS := float64(totalReadAllFileInfoLatency.Nanoseconds()) / 1e6
+			totalCheckLatencyMS := float64(totalCheckUploadIDLatency.Nanoseconds()) / 1e6
+			percentage := (totalReadLatencyMS * 100) / totalCheckLatencyMS
 			readAllFileInfoLatencyStats["percentageOfCheckUploadIDLatency"] = percentage
 		} else {
 			readAllFileInfoLatencyStats["percentageOfCheckUploadIDLatency"] = float64(0)
 		}
 
-		// 전체 업로드 대비 비율 (TotalLatency 대비)
-		if completedUploadCount > 0 && avgTotalLatencyMS > 0 {
-			percentage := (avgReadAllFileInfoLatencyMS * 100) / avgTotalLatencyMS
+		// 전체 업로드 대비 비율 (TotalLatency 대비) - 총합 기준으로 계산
+		if completedUploadCount > 0 && sumTotalLatency > 0 {
+			totalReadLatencyMS := float64(totalReadAllFileInfoLatency.Nanoseconds()) / 1e6
+			totalUploadLatencyMS := float64(sumTotalLatency.Nanoseconds()) / 1e6
+			percentage := (totalReadLatencyMS * 100) / totalUploadLatencyMS
 			readAllFileInfoLatencyStats["percentageOfTotalLatency"] = percentage
 		} else {
 			readAllFileInfoLatencyStats["percentageOfTotalLatency"] = float64(0)
 		}
 
-		// 파트 업로드 대비 비율 (PartLatency 대비)
-		if totalPartCount > 0 && avgPartLatencyMS > 0 {
-			percentage := (avgReadAllFileInfoLatencyMS * 100) / avgPartLatencyMS
+		// 파트 업로드 대비 비율 (PartLatency 대비) - 총합 기준으로 계산
+		if totalPartCount > 0 && sumPartLatency > 0 {
+			totalReadLatencyMS := float64(totalReadAllFileInfoLatency.Nanoseconds()) / 1e6
+			totalPartLatencyMS := float64(sumPartLatency.Nanoseconds()) / 1e6
+			percentage := (totalReadLatencyMS * 100) / totalPartLatencyMS
 			readAllFileInfoLatencyStats["percentageOfPartLatency"] = percentage
 		} else {
 			readAllFileInfoLatencyStats["percentageOfPartLatency"] = float64(0)
