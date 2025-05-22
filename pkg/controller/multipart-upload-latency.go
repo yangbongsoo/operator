@@ -40,6 +40,29 @@ type PartInfo struct {
 	EachPartUploadLatency time.Duration // 파트 업로드 지연 시간
 }
 
+// LatencyStats is the statistics of latency data.
+type LatencyStats struct {
+	TotalSumMS  float64
+	AverageMS   float64
+	MinMS       float64
+	MaxMS       float64
+	StdDevMS    float64
+	Ci95LowerMS float64
+	Ci95UpperMS float64
+	Count       int
+	Percentages map[string]float64
+}
+
+// LatencyData is the data of latency.
+type LatencyData struct {
+	TotalLatency time.Duration
+	MinLatency   time.Duration
+	MaxLatency   time.Duration
+	Count        int
+	SumSquaredMS float64
+	IsFirst      bool
+}
+
 // NewUploadLatencyManager creates a new UploadLatencyManager.
 func NewUploadLatencyManager() *UploadLatencyManager {
 	return &UploadLatencyManager{
@@ -240,473 +263,423 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// 결과 맵 초기화
 	stats := make(map[string]any)
 
-	// 1. TotalLatency 통계 계산
-	var sumTotalLatency time.Duration
-	var minTotalLatency time.Duration
-	var maxTotalLatency time.Duration
-	completedUploadCount := 0
+	// 1. 기본 데이터 수집 단계
+	uploadMetricData, totalData, partData, partDetails := m.collectBasicStats()
 
-	// 2. EachPartUploadLatency 통계 계산
-	var sumPartLatency time.Duration
-	var minPartLatency time.Duration
-	var maxPartLatency time.Duration
-	totalPartCount := 0
+	// 2. 카테고리별 통계 계산
+	// 모든 완료된 멀티파트 업로드의 총 업로드 시간에 대한 통계 데이터
+	totalStats := m.calculateTotalLatencyStats(totalData)
+	// 모든 완료된 멀티파트 업로드의 모든 파트에 대한 통계 데이터다.
+	partStats := m.calculatePartLatencyStats(partData)
+	activeStats := m.calculateActiveInfoStats(totalData)
+	checkUploadIDStats := m.calculateCheckUploadIDStats(uploadMetricData, totalData, partData)
+	readAllFileInfoStats := m.calculateReadAllFileInfoStats(checkUploadIDStats, totalData, partData)
 
-	// 3. part 별 latency
+	// 3. 결과 맵 구성
+	stats["totalLatency"] = totalStats
+	stats["partLatency"] = partStats
+	stats["activeInfoLatency"] = activeStats
+	stats["checkUploadIDExistsLatency"] = checkUploadIDStats
+	stats["readAllFileInfoLatency"] = readAllFileInfoStats
+
+	// 4. 추가 정보
+	stats["multipartUploadMetricCount"] = len(m.multipartUploadMetric)
+	stats["completedUploadCount"] = totalData.Count
+	stats["inProgressUploads"] = len(m.multipartUploadMetric) - totalData.Count
+	stats["partDetails"] = partDetails
+
+	return stats, nil
+}
+
+func (m *UploadLatencyManager) collectBasicStats() (map[string]*MultipartUploadMetric, LatencyData, LatencyData, map[string][]map[string]any) {
+	uploadMetricData := make(map[string]*MultipartUploadMetric)
+	totalData := LatencyData{IsFirst: true}
+	partData := LatencyData{IsFirst: true}
+
+	// key: uploadID
+	// value: map slice 는 map<partID, ?> 와 map<latencyMs, ?> 같은 정보들이 담겨있다.
 	partDetails := make(map[string][]map[string]any)
 
-	// 초기값 설정
-	isFirst := true
-	isFirstPart := true
-
-	// 표준편차 계산을 위한 제곱합
-	var sumSquaredTotalLatencyMS float64
-	var sumSquaredPartLatencyMS float64
-
-	// 모든 업로드를 순회하며 통계 계산
-	for _, uploadMetric := range m.multipartUploadMetric {
-		// 완료된 업로드만 계산에 포함
-		if uploadMetric.IsComplete {
-			// TotalLatency 통계
-			if isFirst || uploadMetric.TotalLatency < minTotalLatency {
-				minTotalLatency = uploadMetric.TotalLatency
-			}
-
-			if isFirst || uploadMetric.TotalLatency > maxTotalLatency {
-				maxTotalLatency = uploadMetric.TotalLatency
-			}
-
-			sumTotalLatency += uploadMetric.TotalLatency
-
-			// 표준편차 계산을 위한 제곱합 (밀리초 단위)
-			latencyMS := float64(uploadMetric.TotalLatency.Nanoseconds()) / 1e6
-			sumSquaredTotalLatencyMS += latencyMS * latencyMS
-
-			completedUploadCount++
-			isFirst = false
-
-			// 완료된 업로드의 파트에 대한 통계 계산
-			for _, part := range uploadMetric.Parts {
-				if isFirstPart || part.EachPartUploadLatency < minPartLatency {
-					minPartLatency = part.EachPartUploadLatency
-				}
-
-				if isFirstPart || part.EachPartUploadLatency > maxPartLatency {
-					maxPartLatency = part.EachPartUploadLatency
-				}
-
-				sumPartLatency += part.EachPartUploadLatency
-
-				// 파트 지연시간 제곱합 (밀리초 단위)
-				partLatencyMS := float64(part.EachPartUploadLatency.Nanoseconds()) / 1e6
-				sumSquaredPartLatencyMS += partLatencyMS * partLatencyMS
-
-				totalPartCount++
-				isFirstPart = false
-			}
-
-			// part
-			parts := make([]map[string]any, 0, len(uploadMetric.Parts))
-			partIDs := make([]int, 0, len(uploadMetric.Parts))
-			for partID := range uploadMetric.Parts {
-				partIDs = append(partIDs, partID)
-			}
-			sort.Ints(partIDs)
-
-			for _, partID := range partIDs {
-				part := uploadMetric.Parts[partID]
-				parts = append(parts, map[string]any{
-					"partID":    part.PartID,
-					"latencyMS": float64(part.EachPartUploadLatency.Nanoseconds()) / 1e6,
-				})
-			}
-			partDetails[uploadMetric.UploadID] = parts
+	// 모든 업로드를 순회하며 기본 통계 수집
+	for uploadID, uploadMetric := range m.multipartUploadMetric {
+		if !uploadMetric.IsComplete {
+			continue
 		}
+
+		uploadMetricData[uploadID] = uploadMetric
+
+		// 업로드 지연 시간 통계 수집
+		if totalData.IsFirst || uploadMetric.TotalLatency < totalData.MinLatency {
+			totalData.MinLatency = uploadMetric.TotalLatency
+		}
+		if totalData.IsFirst || uploadMetric.TotalLatency > totalData.MaxLatency {
+			totalData.MaxLatency = uploadMetric.TotalLatency
+		}
+
+		totalData.TotalLatency += uploadMetric.TotalLatency
+		latencyMS := float64(uploadMetric.TotalLatency.Nanoseconds()) / 1e6
+		totalData.SumSquaredMS += latencyMS * latencyMS // 총 지연 시간의 제곱 합(표준편차  구하기 위함)
+		totalData.Count++
+		totalData.IsFirst = false
+
+		// 파트 통계 수집 및 정렬
+		parts := make([]map[string]any, 0, len(uploadMetric.Parts))
+		partIDs := make([]int, 0, len(uploadMetric.Parts))
+		for partID := range uploadMetric.Parts {
+			partIDs = append(partIDs, partID)
+		}
+		sort.Ints(partIDs)
+
+		// 파트별 통계 수집
+		for _, partID := range partIDs {
+			part := uploadMetric.Parts[partID]
+
+			if partData.IsFirst || part.EachPartUploadLatency < partData.MinLatency {
+				partData.MinLatency = part.EachPartUploadLatency
+			}
+			if partData.IsFirst || part.EachPartUploadLatency > partData.MaxLatency {
+				partData.MaxLatency = part.EachPartUploadLatency
+			}
+
+			partData.TotalLatency += part.EachPartUploadLatency
+			partLatencyMS := float64(part.EachPartUploadLatency.Nanoseconds()) / 1e6
+			partData.SumSquaredMS += partLatencyMS * partLatencyMS // 총 지연 시간의 제곱 합(표준편차  구하기 위함)
+			partData.Count++
+			partData.IsFirst = false
+
+			// 파트 상세 정보 저장
+			parts = append(parts, map[string]any{
+				"partID":    part.PartID,
+				"latencyMS": float64(part.EachPartUploadLatency.Nanoseconds()) / 1e6,
+			})
+		}
+
+		partDetails[uploadID] = parts
 	}
 
-	// TotalLatency 통계 결과
-	totalLatencyStats := make(map[string]any)
-	var avgTotalLatencyMS float64
+	return uploadMetricData, totalData, partData, partDetails
+}
 
-	if completedUploadCount > 0 {
-		avgTotalLatency := sumTotalLatency / time.Duration(completedUploadCount)
-		avgTotalLatencyMS = float64(avgTotalLatency.Nanoseconds()) / 1e6
+// 지연 시간 통계 계산 유틸리티 함수
+func calculateLatencyStats(data LatencyData) map[string]any {
+	stats := make(map[string]any)
 
-		// 분산 계산
-		varianceMS := (sumSquaredTotalLatencyMS / float64(completedUploadCount)) - (avgTotalLatencyMS * avgTotalLatencyMS)
-		if varianceMS < 0 {
-			// 수치적 오류로 음수가 나올 경우 0으로 처리
-			varianceMS = 0
-		}
-		// 표준편차 계산
-		stdDevMS := math.Sqrt(varianceMS)
-
-		// 95% 신뢰구간 계산
-		standardErrorMS := stdDevMS / math.Sqrt(float64(completedUploadCount))
-		ci95LowerMS := avgTotalLatencyMS - 1.96*standardErrorMS
-		ci95UpperMS := avgTotalLatencyMS + 1.96*standardErrorMS
-
-		// 밀리초 단위만 유지
-		totalLatencyStats["averageMS"] = avgTotalLatencyMS
-		totalLatencyStats["minMS"] = float64(minTotalLatency.Nanoseconds()) / 1e6
-		totalLatencyStats["maxMS"] = float64(maxTotalLatency.Nanoseconds()) / 1e6
-		totalLatencyStats["stdDevMS"] = stdDevMS
-		totalLatencyStats["ci95LowerMS"] = ci95LowerMS
-		totalLatencyStats["ci95UpperMS"] = ci95UpperMS
-		totalLatencyStats["count"] = completedUploadCount
-	} else {
-		// 밀리초 단위만 유지
-		totalLatencyStats["averageMS"] = float64(0)
-		totalLatencyStats["minMS"] = float64(0)
-		totalLatencyStats["maxMS"] = float64(0)
-		totalLatencyStats["stdDevMS"] = float64(0)
-		totalLatencyStats["ci95LowerMS"] = float64(0)
-		totalLatencyStats["ci95UpperMS"] = float64(0)
-		totalLatencyStats["count"] = 0
+	if data.Count <= 0 {
+		stats["averageMS"] = float64(0)
+		stats["minMS"] = float64(0)
+		stats["maxMS"] = float64(0)
+		stats["stdDevMS"] = float64(0)
+		stats["ci95LowerMS"] = float64(0)
+		stats["ci95UpperMS"] = float64(0)
+		stats["count"] = 0
+		stats["totalSumMS"] = float64(0)
+		return stats
 	}
 
-	// EachPartUploadLatency 통계 결과
-	partLatencyStats := make(map[string]any)
-	var avgPartLatencyMS float64
+	avgLatency := data.TotalLatency / time.Duration(data.Count)
+	avgLatencyMS := float64(avgLatency.Nanoseconds()) / 1e6
 
-	if totalPartCount > 0 {
-		avgPartLatency := sumPartLatency / time.Duration(totalPartCount)
-		avgPartLatencyMS = float64(avgPartLatency.Nanoseconds()) / 1e6
-
-		// 분산 계산
-		partVarianceMS := (sumSquaredPartLatencyMS / float64(totalPartCount)) - (avgPartLatencyMS * avgPartLatencyMS)
-		if partVarianceMS < 0 {
-			// 수치적 오류로 음수가 나올 경우 0으로 처리
-			partVarianceMS = 0
-		}
-		// 표준편차 계산
-		partStdDevMS := math.Sqrt(partVarianceMS)
-
-		// 95% 신뢰구간 계산
-		partStandardErrorMS := partStdDevMS / math.Sqrt(float64(totalPartCount))
-		partCi95LowerMS := avgPartLatencyMS - 1.96*partStandardErrorMS
-		partCi95UpperMS := avgPartLatencyMS + 1.96*partStandardErrorMS
-
-		// 밀리초 단위만 유지
-		partLatencyStats["averageMS"] = avgPartLatencyMS
-		partLatencyStats["minMS"] = float64(minPartLatency.Nanoseconds()) / 1e6
-		partLatencyStats["maxMS"] = float64(maxPartLatency.Nanoseconds()) / 1e6
-		partLatencyStats["stdDevMS"] = partStdDevMS
-		partLatencyStats["ci95LowerMS"] = partCi95LowerMS
-		partLatencyStats["ci95UpperMS"] = partCi95UpperMS
-		partLatencyStats["count"] = totalPartCount
-	} else {
-		// 밀리초 단위만 유지
-		partLatencyStats["averageMS"] = float64(0)
-		partLatencyStats["minMS"] = float64(0)
-		partLatencyStats["maxMS"] = float64(0)
-		partLatencyStats["stdDevMS"] = float64(0)
-		partLatencyStats["ci95LowerMS"] = float64(0)
-		partLatencyStats["ci95UpperMS"] = float64(0)
-		partLatencyStats["count"] = 0
+	// 분산 계산
+	varianceMS := (data.SumSquaredMS / float64(data.Count)) - (avgLatencyMS * avgLatencyMS)
+	if varianceMS < 0 {
+		varianceMS = 0 // 수치적 오류로 인한 음수 방지
 	}
 
-	// getActiveInfoLatency 통계 계산
-	activeInfoLatencyStats := make(map[string]any)
-	tagLatencyStats := make(map[string]map[string]any)
-	var totalActiveInfoLatency time.Duration
-	totalActiveInfoCount := 0
+	// 표준편차 계산
+	stdDevMS := math.Sqrt(varianceMS)
 
-	// 각 태그별 지연 시간 합계 및 통계 계산
+	// 95% 신뢰구간 계산
+	standardErrorMS := stdDevMS / math.Sqrt(float64(data.Count))
+	ci95LowerMS := avgLatencyMS - 1.96*standardErrorMS
+	ci95UpperMS := avgLatencyMS + 1.96*standardErrorMS
+
+	// 밀리초 단위로 통계 저장
+	stats["totalSumMS"] = float64(data.TotalLatency.Nanoseconds()) / 1e6
+	stats["averageMS"] = avgLatencyMS
+	stats["minMS"] = float64(data.MinLatency.Nanoseconds()) / 1e6
+	stats["maxMS"] = float64(data.MaxLatency.Nanoseconds()) / 1e6
+	stats["stdDevMS"] = stdDevMS
+	stats["ci95LowerMS"] = ci95LowerMS
+	stats["ci95UpperMS"] = ci95UpperMS
+	stats["count"] = data.Count
+
+	return stats
+}
+
+// 비율 계산 유틸리티 함수
+func calculatePercentage(part, total float64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return (part * 100) / total
+}
+
+// TotalLatency 통계 계산
+func (m *UploadLatencyManager) calculateTotalLatencyStats(data LatencyData) map[string]any {
+	return calculateLatencyStats(data)
+}
+
+// PartLatency 통계 계산
+func (m *UploadLatencyManager) calculatePartLatencyStats(data LatencyData) map[string]any {
+	return calculateLatencyStats(data)
+}
+
+// ActiveInfoLatency 통계 계산
+func (m *UploadLatencyManager) calculateActiveInfoStats(totalData LatencyData) map[string]any {
+	activeInfoData := LatencyData{IsFirst: true}
+	tagStats := make(map[string]map[string]any)
+
+	// 각 태그별 지연 시간 수집
 	for tag, latencies := range m.getActiveInfoLatency {
 		if len(latencies) == 0 {
 			continue
 		}
 
-		tagStats := make(map[string]any)
-		var tagTotalLatency time.Duration
-		var tagMinLatency time.Duration
-		var tagMaxLatency time.Duration
-		isFirstTag := true
+		tagData := LatencyData{IsFirst: true}
 
 		for _, latency := range latencies {
-			if isFirstTag || latency < tagMinLatency {
-				tagMinLatency = latency
+			if tagData.IsFirst || latency < tagData.MinLatency {
+				tagData.MinLatency = latency
+			}
+			if tagData.IsFirst || latency > tagData.MaxLatency {
+				tagData.MaxLatency = latency
 			}
 
-			if isFirstTag || latency > tagMaxLatency {
-				tagMaxLatency = latency
-			}
+			tagData.TotalLatency += latency
+			tagLatencyMS := float64(latency.Nanoseconds()) / 1e6
+			tagData.SumSquaredMS += tagLatencyMS * tagLatencyMS
+			tagData.Count++
+			tagData.IsFirst = false
 
-			tagTotalLatency += latency
-			totalActiveInfoLatency += latency
-			isFirstTag = false
-			totalActiveInfoCount++
+			// 전체 activeInfo 통계에도 추가
+			activeInfoData.TotalLatency += latency
+			activeInfoData.Count++
+
+			if activeInfoData.IsFirst || latency < activeInfoData.MinLatency {
+				activeInfoData.MinLatency = latency
+			}
+			if activeInfoData.IsFirst || latency > activeInfoData.MaxLatency {
+				activeInfoData.MaxLatency = latency
+			}
+			activeInfoData.IsFirst = false
 		}
 
-		avgTagLatency := tagTotalLatency / time.Duration(len(latencies))
-		avgTagLatencyMS := float64(avgTagLatency.Nanoseconds()) / 1e6
-
-		tagStats["count"] = len(latencies)
-		tagStats["sumMS"] = float64(tagTotalLatency.Nanoseconds()) / 1e6
-		tagStats["averageMS"] = avgTagLatencyMS
-		tagStats["minMS"] = float64(tagMinLatency.Nanoseconds()) / 1e6
-		tagStats["maxMS"] = float64(tagMaxLatency.Nanoseconds()) / 1e6
-
-		tagLatencyStats[tag] = tagStats
+		tagStats[tag] = calculateLatencyStats(tagData)
 	}
 
-	// 전체 getActiveInfoLatency 통계
-	if totalActiveInfoCount > 0 {
-		avgActiveInfoLatency := totalActiveInfoLatency / time.Duration(totalActiveInfoCount)
-		avgActiveInfoLatencyMS := float64(avgActiveInfoLatency.Nanoseconds()) / 1e6
+	// 전체 activeInfo 통계 계산
+	activeInfoStats := calculateLatencyStats(activeInfoData)
 
-		activeInfoLatencyStats["totalSumMS"] = float64(totalActiveInfoLatency.Nanoseconds()) / 1e6
-		activeInfoLatencyStats["averageMS"] = avgActiveInfoLatencyMS
-		activeInfoLatencyStats["count"] = totalActiveInfoCount
-
-		// avgTotalLatencyMS 대비 getActiveInfoLatency의 비율 계산 (completedUploadCount > 0인 경우만)
-		if completedUploadCount > 0 && avgTotalLatencyMS > 0 {
-			percentage := (avgActiveInfoLatencyMS / avgTotalLatencyMS) * 100
-			activeInfoLatencyStats["percentageOfTotalLatency"] = percentage
-		} else {
-			activeInfoLatencyStats["percentageOfTotalLatency"] = float64(0)
-		}
+	// 총 업로드 시간 대비 비율 계산
+	if activeInfoData.Count > 0 && totalData.Count > 0 {
+		totalLatencyMS := float64(totalData.TotalLatency.Nanoseconds()) / 1e6
+		activeInfoLatencyMS := float64(activeInfoData.TotalLatency.Nanoseconds()) / 1e6
+		percentage := calculatePercentage(activeInfoLatencyMS, totalLatencyMS)
+		activeInfoStats["percentageOfTotalLatency"] = percentage
 	} else {
-		activeInfoLatencyStats["totalSumMS"] = float64(0)
-		activeInfoLatencyStats["averageMS"] = float64(0)
-		activeInfoLatencyStats["count"] = 0
-		activeInfoLatencyStats["percentageOfTotalLatency"] = float64(0)
+		activeInfoStats["percentageOfTotalLatency"] = float64(0)
 	}
 
-	activeInfoLatencyStats["tagStats"] = tagLatencyStats
+	activeInfoStats["tagStats"] = tagStats
+	return activeInfoStats
+}
 
-	// checkUploadIDExistsLatency 통계 계산
-	checkUploadIDLatencyStats := make(map[string]any)
-	checkUploadIDLatencyDetails := make(map[string]map[string]any)
-	var totalCheckUploadIDLatency time.Duration
-	totalCheckUploadIDCount := 0
+// CheckUploadIDExistsLatency 통계 계산
+func (m *UploadLatencyManager) calculateCheckUploadIDStats(uploadMetricData map[string]*MultipartUploadMetric, totalData LatencyData, partData LatencyData) map[string]any {
+	checkUploadIDData := LatencyData{IsFirst: true}
+	checkUploadIDDetails := make(map[string]map[string]any)
 
-	// 업로드ID별 지연 시간 합계 및 통계 계산
+	// 업로드ID별 지연 시간 수집
+	// 1GB * 50번 테스트 라면 (64+1) * 50번 호출이 발생한다. 64는 파트수 1번은 CompleteMultipartUpload 호출이다.
 	for uploadID, latencies := range m.checkUploadIDExistsLatency {
 		if len(latencies) == 0 {
 			continue
 		}
 
-		// 해당 uploadID에 대한 업로드 정보 가져오기
-		uploadMetric, exists := m.multipartUploadMetric[uploadID]
+		// 완료된 업로드만 포함
+		uploadMetric, exists := uploadMetricData[uploadID]
 		if !exists || !uploadMetric.IsComplete {
-			continue // 완료된 업로드만 포함
+			continue
 		}
 
-		uploadStats := make(map[string]any)
-		var uploadTotalLatency time.Duration
-		var uploadMinLatency time.Duration
-		var uploadMaxLatency time.Duration
-		isFirstUpload := true
+		checkUploadIDExistData := LatencyData{IsFirst: true}
 
 		for _, latency := range latencies {
-			if isFirstUpload || latency < uploadMinLatency {
-				uploadMinLatency = latency
+			if checkUploadIDExistData.IsFirst || latency < checkUploadIDExistData.MinLatency {
+				checkUploadIDExistData.MinLatency = latency
+			}
+			if checkUploadIDExistData.IsFirst || latency > checkUploadIDExistData.MaxLatency {
+				checkUploadIDExistData.MaxLatency = latency
 			}
 
-			if isFirstUpload || latency > uploadMaxLatency {
-				uploadMaxLatency = latency
-			}
+			checkUploadIDExistData.TotalLatency += latency
+			latencyMS := float64(latency.Nanoseconds()) / 1e6
+			checkUploadIDExistData.SumSquaredMS += latencyMS * latencyMS
+			checkUploadIDExistData.Count++
+			checkUploadIDExistData.IsFirst = false
 
-			uploadTotalLatency += latency
-			totalCheckUploadIDLatency += latency
-			isFirstUpload = false
-			totalCheckUploadIDCount++
+			// 전체 checkUploadID 통계에도 추가
+			checkUploadIDData.TotalLatency += latency
+			checkUploadIDData.Count++
+
+			if checkUploadIDData.IsFirst || latency < checkUploadIDData.MinLatency {
+				checkUploadIDData.MinLatency = latency
+			}
+			if checkUploadIDData.IsFirst || latency > checkUploadIDData.MaxLatency {
+				checkUploadIDData.MaxLatency = latency
+			}
+			checkUploadIDData.IsFirst = false
 		}
 
-		// 업로드별 통계 계산
-		avgUploadLatency := uploadTotalLatency / time.Duration(len(latencies))
-		avgUploadLatencyMS := float64(avgUploadLatency.Nanoseconds()) / 1e6
+		// 하나의 uploadId 에 대한 CheckUploadIDExists 호출들의 통계 계산
+		checkUploadIDExisStats := calculateLatencyStats(checkUploadIDExistData)
 
-		// 업로드별 지연 시간 통계
-		uploadStats["count"] = len(latencies)
-		uploadStats["sumMS"] = float64(uploadTotalLatency.Nanoseconds()) / 1e6
-		uploadStats["averageMS"] = avgUploadLatencyMS
-		uploadStats["minMS"] = float64(uploadMinLatency.Nanoseconds()) / 1e6
-		uploadStats["maxMS"] = float64(uploadMaxLatency.Nanoseconds()) / 1e6
-
-		// 업로드별 전체 업로드 대비 비율 (해당 업로드의 TotalLatency 대비)
+		// 전체 업로드 대비 CheckUploadIDExists 비율 계산
 		if uploadMetric.TotalLatency > 0 {
 			uploadTotalLatencyMS := float64(uploadMetric.TotalLatency.Nanoseconds()) / 1e6
-			// 체크 지연시간 총합을 밀리초로 변환
-			uploadCheckTotalLatencyMS := float64(uploadTotalLatency.Nanoseconds()) / 1e6
-			// 전체 업로드 지연시간 대비 체크 지연시간의 비율 계산
-			percentage := (uploadCheckTotalLatencyMS * 100) / uploadTotalLatencyMS
-			uploadStats["percentageOfCheckUploadIDLatency"] = percentage
+			uploadCheckTotalLatencyMS := float64(checkUploadIDExistData.TotalLatency.Nanoseconds()) / 1e6
+			percentage := calculatePercentage(uploadCheckTotalLatencyMS, uploadTotalLatencyMS)
+			checkUploadIDExisStats["percentageOfUploadLatency"] = percentage
 		} else {
-			uploadStats["percentageOfCheckUploadIDLatency"] = float64(0)
+			checkUploadIDExisStats["percentageOfUploadLatency"] = float64(0)
 		}
 
-		// 파트별 통계 계산 (해당 업로드의 각 파트 대비)
+		// 파트별 백분율 계산
 		if len(uploadMetric.Parts) > 0 {
 			partPercentages := make(map[int]float64)
+			avgUploadLatencyMS := checkUploadIDExisStats["averageMS"].(float64)
 
 			for partID, part := range uploadMetric.Parts {
 				partLatencyMS := float64(part.EachPartUploadLatency.Nanoseconds()) / 1e6
 				if partLatencyMS > 0 {
-					// 파트별 지연시간 대비 체크 지연시간의 비율 계산
-					partPercentage := (avgUploadLatencyMS * 100) / partLatencyMS
+					partPercentage := calculatePercentage(avgUploadLatencyMS, partLatencyMS)
 					partPercentages[partID] = partPercentage
 				} else {
 					partPercentages[partID] = 0
 				}
 			}
 
-			uploadStats["partPercentages"] = partPercentages
+			checkUploadIDExisStats["partPercentages"] = partPercentages
 		}
 
-		checkUploadIDLatencyDetails[uploadID] = uploadStats
+		checkUploadIDDetails[uploadID] = checkUploadIDExisStats
 	}
 
-	// 전체 checkUploadIDExistsLatency 통계
-	if totalCheckUploadIDCount > 0 {
-		avgCheckUploadIDLatency := totalCheckUploadIDLatency / time.Duration(totalCheckUploadIDCount)
-		avgCheckUploadIDLatencyMS := float64(avgCheckUploadIDLatency.Nanoseconds()) / 1e6
+	// 모든 업로드에 걸친 CheckUploadIDExists 통계 계산(반복횟수 포함된것)
+	checkUploadIDStats := calculateLatencyStats(checkUploadIDData)
 
-		checkUploadIDLatencyStats["totalSumMS"] = float64(totalCheckUploadIDLatency.Nanoseconds()) / 1e6
-		checkUploadIDLatencyStats["averageMS"] = avgCheckUploadIDLatencyMS
-		checkUploadIDLatencyStats["count"] = totalCheckUploadIDCount
-
-		// 전체 업로드 대비 비율 (TotalLatency 대비) - 총합 기준으로 계산
-		if completedUploadCount > 0 && sumTotalLatency > 0 {
-			totalCheckLatencyMS := float64(totalCheckUploadIDLatency.Nanoseconds()) / 1e6
-			totalUploadLatencyMS := float64(sumTotalLatency.Nanoseconds()) / 1e6
-			percentage := (totalCheckLatencyMS * 100) / totalUploadLatencyMS
-			checkUploadIDLatencyStats["percentageOfTotalLatency"] = percentage
-		} else {
-			checkUploadIDLatencyStats["percentageOfTotalLatency"] = float64(0)
-		}
-
-		// 파트 업로드 대비 비율 (PartLatency 대비) - 총합 기준으로 계산
-		if totalPartCount > 0 && sumPartLatency > 0 {
-			totalCheckLatencyMS := float64(totalCheckUploadIDLatency.Nanoseconds()) / 1e6
-			totalPartLatencyMS := float64(sumPartLatency.Nanoseconds()) / 1e6
-			percentage := (totalCheckLatencyMS * 100) / totalPartLatencyMS
-			checkUploadIDLatencyStats["percentageOfPartLatency"] = percentage
-		} else {
-			checkUploadIDLatencyStats["percentageOfPartLatency"] = float64(0)
-		}
+	// 전체 업로드 대비 비율 계산 (TotalLatency 대비) - 총합 기준
+	// 모든 CheckUploadIDExists 호출의 총 소요 시간과 모든 업로드의 총 소요 시간을 비교
+	if checkUploadIDData.Count > 0 && totalData.Count > 0 {
+		// 모든 업로드에서 발생한 모든 CheckUploadIDExists 호출의 누적 소요 시간
+		totalCheckLatencyMS := float64(checkUploadIDData.TotalLatency.Nanoseconds()) / 1e6
+		// 모든 업로드의 시작부터 완료까지 소요된 총 시간의 합
+		totalUploadLatencyMS := float64(totalData.TotalLatency.Nanoseconds()) / 1e6
+		percentage := calculatePercentage(totalCheckLatencyMS, totalUploadLatencyMS)
+		checkUploadIDStats["percentageOfTotalLatency"] = percentage
 	} else {
-		checkUploadIDLatencyStats["totalSumMS"] = float64(0)
-		checkUploadIDLatencyStats["averageMS"] = float64(0)
-		checkUploadIDLatencyStats["count"] = 0
-		checkUploadIDLatencyStats["percentageOfTotalLatency"] = float64(0)
-		checkUploadIDLatencyStats["percentageOfPartLatency"] = float64(0)
+		checkUploadIDStats["percentageOfTotalLatency"] = float64(0)
 	}
 
-	checkUploadIDLatencyStats["checkUploadIDStats"] = checkUploadIDLatencyDetails
+	// 파트 업로드 대비 비율 계산 (PartLatency 대비) - 총합 기준
+	if checkUploadIDData.Count > 0 && partData.Count > 0 {
+		totalCheckLatencyMS := float64(checkUploadIDData.TotalLatency.Nanoseconds()) / 1e6
+		totalPartLatencyMS := float64(partData.TotalLatency.Nanoseconds()) / 1e6
+		percentage := calculatePercentage(totalCheckLatencyMS, totalPartLatencyMS)
+		checkUploadIDStats["percentageOfPartLatency"] = percentage
+	} else {
+		checkUploadIDStats["percentageOfPartLatency"] = float64(0)
+	}
 
-	// readAllFileInfoLatency 통계 계산
-	readAllFileInfoLatencyStats := make(map[string]any)
-	readAllFileInfoLatencyDetails := make(map[string]map[string]any)
-	var totalReadAllFileInfoLatency time.Duration
-	totalReadAllFileInfoCount := 0
+	checkUploadIDStats["checkUploadIDStats"] = checkUploadIDDetails
+	return checkUploadIDStats
+}
 
-	// bucket/object별 지연 시간 합계 및 통계 계산
+// ReadAllFileInfoLatency 통계 계산
+func (m *UploadLatencyManager) calculateReadAllFileInfoStats(checkUploadIDStats map[string]any, totalData LatencyData, partData LatencyData) map[string]any {
+	readAllFileInfoData := LatencyData{IsFirst: true}
+	readAllFileInfoDetails := make(map[string]map[string]any)
+
+	// bucket/object별 지연 시간 수집
 	for key, latencies := range m.readAllFileInfoLatency {
 		if len(latencies) == 0 {
 			continue
 		}
 
-		readAllFileInfoStats := make(map[string]any)
-		var readAllFileInfoTotalLatency time.Duration
-		var readAllFileInfoMinLatency time.Duration
-		var readAllFileInfoMaxLatency time.Duration
-		isFirstReadAllFileInfo := true
+		keyData := LatencyData{IsFirst: true}
 
 		for _, latency := range latencies {
-			if isFirstReadAllFileInfo || latency < readAllFileInfoMinLatency {
-				readAllFileInfoMinLatency = latency
+			if keyData.IsFirst || latency < keyData.MinLatency {
+				keyData.MinLatency = latency
+			}
+			if keyData.IsFirst || latency > keyData.MaxLatency {
+				keyData.MaxLatency = latency
 			}
 
-			if isFirstReadAllFileInfo || latency > readAllFileInfoMaxLatency {
-				readAllFileInfoMaxLatency = latency
-			}
+			keyData.TotalLatency += latency
+			latencyMS := float64(latency.Nanoseconds()) / 1e6
+			keyData.SumSquaredMS += latencyMS * latencyMS
+			keyData.Count++
+			keyData.IsFirst = false
 
-			readAllFileInfoTotalLatency += latency
-			totalReadAllFileInfoLatency += latency
-			isFirstReadAllFileInfo = false
-			totalReadAllFileInfoCount++
+			// 전체 readAllFileInfo 통계에도 추가
+			readAllFileInfoData.TotalLatency += latency
+			readAllFileInfoData.Count++
+
+			if readAllFileInfoData.IsFirst || latency < readAllFileInfoData.MinLatency {
+				readAllFileInfoData.MinLatency = latency
+			}
+			if readAllFileInfoData.IsFirst || latency > readAllFileInfoData.MaxLatency {
+				readAllFileInfoData.MaxLatency = latency
+			}
+			readAllFileInfoData.IsFirst = false
 		}
 
-		avgReadAllFileInfoLatency := readAllFileInfoTotalLatency / time.Duration(len(latencies))
-		avgReadAllFileInfoLatencyMS := float64(avgReadAllFileInfoLatency.Nanoseconds()) / 1e6
-
-		readAllFileInfoStats["count"] = len(latencies)
-		readAllFileInfoStats["sumMS"] = float64(readAllFileInfoTotalLatency.Nanoseconds()) / 1e6
-		readAllFileInfoStats["averageMS"] = avgReadAllFileInfoLatencyMS
-		readAllFileInfoStats["minMS"] = float64(readAllFileInfoMinLatency.Nanoseconds()) / 1e6
-		readAllFileInfoStats["maxMS"] = float64(readAllFileInfoMaxLatency.Nanoseconds()) / 1e6
-
-		readAllFileInfoLatencyDetails[key] = readAllFileInfoStats
+		readAllFileInfoDetails[key] = calculateLatencyStats(keyData)
 	}
 
-	// 전체 readAllFileInfoLatency 통계
-	if totalReadAllFileInfoCount > 0 {
-		avgReadAllFileInfoLatency := totalReadAllFileInfoLatency / time.Duration(totalReadAllFileInfoCount)
-		avgReadAllFileInfoLatencyMS := float64(avgReadAllFileInfoLatency.Nanoseconds()) / 1e6
+	// 전체 readAllFileInfo 통계 계산
+	readAllFileInfoStats := calculateLatencyStats(readAllFileInfoData)
 
-		readAllFileInfoLatencyStats["totalSumMS"] = float64(totalReadAllFileInfoLatency.Nanoseconds()) / 1e6
-		readAllFileInfoLatencyStats["averageMS"] = avgReadAllFileInfoLatencyMS
-		readAllFileInfoLatencyStats["count"] = totalReadAllFileInfoCount
-
-		// checkUploadIDExistsLatency와의 비율 계산 - 총합 기준으로 계산
-		// - checkUploadIDExistsLatency 총 지연시간 대비 readAllFileInfoLatency 총 지연시간의 비율
-		if totalCheckUploadIDCount > 0 && totalCheckUploadIDLatency > 0 {
-			totalReadLatencyMS := float64(totalReadAllFileInfoLatency.Nanoseconds()) / 1e6
-			totalCheckLatencyMS := float64(totalCheckUploadIDLatency.Nanoseconds()) / 1e6
-			percentage := (totalReadLatencyMS * 100) / totalCheckLatencyMS
-			readAllFileInfoLatencyStats["percentageOfCheckUploadIDLatency"] = percentage
+	// checkUploadIDExistsLatency와의 비율 계산 - 총합 기준
+	if readAllFileInfoData.Count > 0 && checkUploadIDStats["count"].(int) > 0 {
+		totalReadLatencyMS := float64(readAllFileInfoData.TotalLatency.Nanoseconds()) / 1e6
+		totalCheckLatencyMS := checkUploadIDStats["totalSumMS"].(float64)
+		if totalCheckLatencyMS > 0 {
+			percentage := calculatePercentage(totalReadLatencyMS, totalCheckLatencyMS)
+			readAllFileInfoStats["percentageOfCheckUploadIDLatency"] = percentage
 		} else {
-			readAllFileInfoLatencyStats["percentageOfCheckUploadIDLatency"] = float64(0)
-		}
-
-		// 전체 업로드 대비 비율 (TotalLatency 대비) - 총합 기준으로 계산
-		if completedUploadCount > 0 && sumTotalLatency > 0 {
-			totalReadLatencyMS := float64(totalReadAllFileInfoLatency.Nanoseconds()) / 1e6
-			totalUploadLatencyMS := float64(sumTotalLatency.Nanoseconds()) / 1e6
-			percentage := (totalReadLatencyMS * 100) / totalUploadLatencyMS
-			readAllFileInfoLatencyStats["percentageOfTotalLatency"] = percentage
-		} else {
-			readAllFileInfoLatencyStats["percentageOfTotalLatency"] = float64(0)
-		}
-
-		// 파트 업로드 대비 비율 (PartLatency 대비) - 총합 기준으로 계산
-		if totalPartCount > 0 && sumPartLatency > 0 {
-			totalReadLatencyMS := float64(totalReadAllFileInfoLatency.Nanoseconds()) / 1e6
-			totalPartLatencyMS := float64(sumPartLatency.Nanoseconds()) / 1e6
-			percentage := (totalReadLatencyMS * 100) / totalPartLatencyMS
-			readAllFileInfoLatencyStats["percentageOfPartLatency"] = percentage
-		} else {
-			readAllFileInfoLatencyStats["percentageOfPartLatency"] = float64(0)
+			readAllFileInfoStats["percentageOfCheckUploadIDLatency"] = float64(0)
 		}
 	} else {
-		readAllFileInfoLatencyStats["totalSumMS"] = float64(0)
-		readAllFileInfoLatencyStats["averageMS"] = float64(0)
-		readAllFileInfoLatencyStats["count"] = 0
-		readAllFileInfoLatencyStats["percentageOfCheckUploadIDLatency"] = float64(0)
-		readAllFileInfoLatencyStats["percentageOfTotalLatency"] = float64(0)
-		readAllFileInfoLatencyStats["percentageOfPartLatency"] = float64(0)
+		readAllFileInfoStats["percentageOfCheckUploadIDLatency"] = float64(0)
 	}
 
-	readAllFileInfoLatencyStats["readAllFileInfoStats"] = readAllFileInfoLatencyDetails
+	// 전체 업로드 대비 비율 계산 (TotalLatency 대비) - 총합 기준
+	if readAllFileInfoData.Count > 0 && totalData.Count > 0 {
+		totalReadLatencyMS := float64(readAllFileInfoData.TotalLatency.Nanoseconds()) / 1e6
+		totalUploadLatencyMS := float64(totalData.TotalLatency.Nanoseconds()) / 1e6
+		percentage := calculatePercentage(totalReadLatencyMS, totalUploadLatencyMS)
+		readAllFileInfoStats["percentageOfTotalLatency"] = percentage
+	} else {
+		readAllFileInfoStats["percentageOfTotalLatency"] = float64(0)
+	}
 
-	// 결과 맵 구성
-	stats["totalLatency"] = totalLatencyStats
-	stats["partLatency"] = partLatencyStats
-	stats["activeInfoLatency"] = activeInfoLatencyStats
-	stats["checkUploadIDExistsLatency"] = checkUploadIDLatencyStats
-	stats["readAllFileInfoLatency"] = readAllFileInfoLatencyStats
+	// 파트 업로드 대비 비율 계산 (PartLatency 대비) - 총합 기준
+	if readAllFileInfoData.Count > 0 && partData.Count > 0 {
+		totalReadLatencyMS := float64(readAllFileInfoData.TotalLatency.Nanoseconds()) / 1e6
+		totalPartLatencyMS := float64(partData.TotalLatency.Nanoseconds()) / 1e6
+		percentage := calculatePercentage(totalReadLatencyMS, totalPartLatencyMS)
+		readAllFileInfoStats["percentageOfPartLatency"] = percentage
+	} else {
+		readAllFileInfoStats["percentageOfPartLatency"] = float64(0)
+	}
 
-	// 추가 정보
-	stats["multipartUploadMetricCount"] = len(m.multipartUploadMetric)
-	stats["completedUploadCount"] = completedUploadCount
-	stats["inProgressUploads"] = len(m.multipartUploadMetric) - completedUploadCount
-	stats["partDetails"] = partDetails
-	return stats, nil
+	readAllFileInfoStats["readAllFileInfoStats"] = readAllFileInfoDetails
+	return readAllFileInfoStats
 }
 
 // ClearMetricsAfterStats clears the metrics after getting the stats.
