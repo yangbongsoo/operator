@@ -1577,6 +1577,8 @@ type MesureCheckUploadIDExists struct {
 	UploadID                   string        `json:"uploadID"`
 	Bucket                     string        `json:"bucket"`
 	Object                     string        `json:"object"`
+	StartTime                  time.Time     `json:"startTime"`
+	CompleteTime               time.Time     `json:"completeTime"`
 	CheckUploadIDExistsLatency time.Duration `json:"checkUploadIDExistsLatency"`
 }
 
@@ -1663,6 +1665,8 @@ func (c *Controller) checkUploadIDExistsLatencyHandler(w http.ResponseWriter, r 
 		mesureCheckUploadIDExists.UploadID,
 		mesureCheckUploadIDExists.Bucket,
 		mesureCheckUploadIDExists.Object,
+		mesureCheckUploadIDExists.StartTime,
+		mesureCheckUploadIDExists.CompleteTime,
 		mesureCheckUploadIDExists.CheckUploadIDExistsLatency,
 	)
 	klog.Infof("[YBS] Received check upload id exists latency: %+v", mesureCheckUploadIDExists)

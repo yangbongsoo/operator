@@ -18,6 +18,7 @@ type UploadLatencyManager struct {
 	getActiveInfoLatency       map[string][]time.Duration
 	checkUploadIDExistsLatency map[string][]time.Duration
 	readAllFileInfoLatency     map[string][]time.Duration
+	checkUploadIDExistsData    map[string][]CheckUploadIDExistsData
 }
 
 // MultipartUploadMetric is all information about a multipart upload.
@@ -63,6 +64,22 @@ type LatencyData struct {
 	IsFirst      bool
 }
 
+// CheckUploadIDExistsData is the data of check upload id exists.
+type CheckUploadIDExistsData struct {
+	UploadID     string
+	Bucket       string
+	Object       string
+	StartTime    time.Time
+	CompleteTime time.Time
+	Latency      time.Duration
+}
+
+// TimeInterval represents a time interval for overlap calculation
+type TimeInterval struct {
+	Start time.Time
+	End   time.Time
+}
+
 // NewUploadLatencyManager creates a new UploadLatencyManager.
 func NewUploadLatencyManager() *UploadLatencyManager {
 	return &UploadLatencyManager{
@@ -70,11 +87,12 @@ func NewUploadLatencyManager() *UploadLatencyManager {
 		getActiveInfoLatency:       make(map[string][]time.Duration),
 		checkUploadIDExistsLatency: make(map[string][]time.Duration),
 		readAllFileInfoLatency:     make(map[string][]time.Duration),
+		checkUploadIDExistsData:    make(map[string][]CheckUploadIDExistsData),
 	}
 }
 
 // RecordCheckUploadIDExistsLatency records the latency of checking upload id exists.
-func (m *UploadLatencyManager) RecordCheckUploadIDExistsLatency(uploadID, bucket, object string, latency time.Duration) {
+func (m *UploadLatencyManager) RecordCheckUploadIDExistsLatency(uploadID, bucket, object string, startTime time.Time, completeTime time.Time, latency time.Duration) {
 	if uploadID == "" {
 		klog.Warningf("[YBS] Empty uploadID provided for checkUploadIDExists latency record, ignoring")
 		return
@@ -91,10 +109,26 @@ func (m *UploadLatencyManager) RecordCheckUploadIDExistsLatency(uploadID, bucket
 		return
 	}
 
+	if completeTime.Before(startTime) {
+		klog.Warningf("[YBS] Invalid time range: completeTime (%v) is before startTime (%v) for uploadID %s, ignoring",
+			completeTime, startTime, uploadID)
+		return
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.checkUploadIDExistsLatency[uploadID] = append(m.checkUploadIDExistsLatency[uploadID], latency)
+
+	data := CheckUploadIDExistsData{
+		UploadID:     uploadID,
+		Bucket:       bucket,
+		Object:       object,
+		StartTime:    startTime,
+		CompleteTime: completeTime,
+		Latency:      latency,
+	}
+	m.checkUploadIDExistsData[uploadID] = append(m.checkUploadIDExistsData[uploadID], data)
 
 	klog.Infof("[YBS] Recorded checkUploadID exists latency - UploadID: %s, Latency: %v, Total records: %d",
 		uploadID, latency, len(m.checkUploadIDExistsLatency[uploadID]))
@@ -278,11 +312,14 @@ func (m *UploadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	checkUploadIDStats := m.calculateCheckUploadIDStats(uploadMetricData, totalData, partData)
 	readAllFileInfoStats := m.calculateReadAllFileInfoStats(checkUploadIDStats, totalData, partData)
 
+	checkUploadIDStatsWithIntervals := m.calculateCheckUploadIDStatsWithIntervals(uploadMetricData, totalData, partData)
+
 	// 3. 결과 맵 구성
 	stats["totalLatency"] = totalStats
 	stats["partLatency"] = partStats
 	stats["activeInfoLatency"] = activeStats
 	stats["checkUploadIDExistsLatency"] = checkUploadIDStats
+	stats["checkUploadIDExistsLatencyWithIntervals"] = checkUploadIDStatsWithIntervals
 	stats["readAllFileInfoLatency"] = readAllFileInfoStats
 
 	// 4. 추가 정보
@@ -719,4 +756,218 @@ func (m *UploadLatencyManager) ClearAllMetrics() {
 	m.readAllFileInfoLatency = make(map[string][]time.Duration)
 
 	klog.Infof("[YBS] Cleared all upload metrics (both completed and in-progress) and all latency records")
+}
+
+func mergeTimeIntervals(intervals []TimeInterval) time.Duration {
+	if len(intervals) == 0 {
+		return 0
+	}
+
+	// 시작 시간 기준으로 오름차순 정렬
+	sort.Slice(intervals, func(i, j int) bool {
+		return intervals[i].Start.Before(intervals[j].Start)
+	})
+
+	var merged []TimeInterval // 최종적으로 병합된 (겹치지 않는) 간격들을 저장
+	current := intervals[0]   // 정렬된 첫 번째 간격을 '현재 병합 중인 간격'으로 설정
+
+	for i := 1; i < len(intervals); i++ {
+		next := intervals[i]
+
+		// 현재 간격(current)과 다음 간격(next)이 겹치는지 확인
+		// - 현재 간격의 끝이 다음 간격의 시작과 같거나 그 이후라면 겹치거나 바로 이어붙는 경우
+		if !current.End.Before(next.Start) {
+			// 겹치는 경우: 현재 간격을 확장하여 병합
+			// 다음 간격의 끝(next.End)이 현재 간격의 끝(current.End)보다 뒤라면,
+			// 현재 간격의 끝을 다음 간격의 끝으로 확장
+			if next.End.After(current.End) {
+				current.End = next.End
+			}
+			// 만약 next 간격이 current 간격에 완전히 포함되는 경우 (next.End <= current.End),
+			// current.End는 변경되지 않으며, 이는 올바른 동작
+		} else {
+			// 겹치지 않는 경우:
+			// 현재까지 만들어진 병합 간격(current)은 완료된 것으로 보고 merged 슬라이스에 추가
+			merged = append(merged, current)
+			current = next
+		}
+	}
+
+	// 마지막 간격(current)을 병합 간격 슬라이스에 추가
+	merged = append(merged, current)
+
+	// 병합된 모든 간격들의 총 유효 시간 계산
+	var totalDuration time.Duration
+	for _, interval := range merged {
+		totalDuration += interval.End.Sub(interval.Start)
+	}
+
+	return totalDuration
+}
+
+// calculateCheckUploadIDStatsWithIntervals calculates CheckUploadIDExists statistics using time interval merging
+func (m *UploadLatencyManager) calculateCheckUploadIDStatsWithIntervals(uploadMetricData map[string]*MultipartUploadMetric, totalData LatencyData, partData LatencyData) map[string]any {
+	checkUploadIDData := LatencyData{IsFirst: true}
+	checkUploadIDDetails := make(map[string]map[string]any)
+
+	// 전체 업로드에 걸친 시간 간격 수집
+	var allIntervals []TimeInterval
+	totalEffectiveDuration := time.Duration(0)
+
+	// 업로드ID별 지연 시간 수집 및 시간 간격 분석
+	for uploadID, dataList := range m.checkUploadIDExistsData {
+		if len(dataList) == 0 {
+			continue
+		}
+
+		// 완료된 업로드만 포함
+		uploadMetric, exists := uploadMetricData[uploadID]
+		if !exists || !uploadMetric.IsComplete {
+			continue
+		}
+
+		checkUploadIDExistData := LatencyData{IsFirst: true}
+		var checkUploadIDIntervals []TimeInterval
+
+		for _, data := range dataList {
+			// 기존 방식의 통계 수집
+			if checkUploadIDExistData.IsFirst || data.Latency < checkUploadIDExistData.MinLatency {
+				checkUploadIDExistData.MinLatency = data.Latency
+			}
+			if checkUploadIDExistData.IsFirst || data.Latency > checkUploadIDExistData.MaxLatency {
+				checkUploadIDExistData.MaxLatency = data.Latency
+			}
+
+			checkUploadIDExistData.TotalLatency += data.Latency
+			latencyMS := float64(data.Latency.Nanoseconds()) / 1e6
+			checkUploadIDExistData.SumSquaredMS += latencyMS * latencyMS
+			checkUploadIDExistData.Count++
+			checkUploadIDExistData.IsFirst = false
+
+			// 전체 checkUploadID 통계에도 추가
+			checkUploadIDData.TotalLatency += data.Latency
+			checkUploadIDData.Count++
+
+			if checkUploadIDData.IsFirst || data.Latency < checkUploadIDData.MinLatency {
+				checkUploadIDData.MinLatency = data.Latency
+			}
+			if checkUploadIDData.IsFirst || data.Latency > checkUploadIDData.MaxLatency {
+				checkUploadIDData.MaxLatency = data.Latency
+			}
+			checkUploadIDData.IsFirst = false
+
+			// CheckUploadIDExists 호출의 시간 간격 수집
+			checkInterval := TimeInterval{
+				Start: data.StartTime,
+				End:   data.CompleteTime,
+			}
+			checkUploadIDIntervals = append(checkUploadIDIntervals, checkInterval)
+			allIntervals = append(allIntervals, checkInterval)
+		}
+
+		// 해당 업로드ID의 CheckUploadIDExists 호출들의 유효 시간 계산
+		checkUploadIDEffectiveDuration := mergeTimeIntervals(checkUploadIDIntervals)
+
+		// 하나의 uploadId에 대한 CheckUploadIDExists 호출들의 통계 계산
+		checkUploadIDExisStats := calculateLatencyStats(checkUploadIDExistData)
+
+		// 기존 방식의 비율 계산 (단순 합산)
+		if uploadMetric.TotalLatency > 0 {
+			uploadTotalLatencyMS := float64(uploadMetric.TotalLatency.Nanoseconds()) / 1e6
+			uploadCheckTotalLatencyMS := float64(checkUploadIDExistData.TotalLatency.Nanoseconds()) / 1e6
+			percentage := calculatePercentage(uploadCheckTotalLatencyMS, uploadTotalLatencyMS)
+			checkUploadIDExisStats["percentageOfUploadLatency"] = percentage
+		} else {
+			checkUploadIDExisStats["percentageOfUploadLatency"] = float64(0)
+		}
+
+		// 개선된 방식의 비율 계산 (시간 간격 병합)
+		if uploadMetric.TotalLatency > 0 {
+			uploadTotalLatencyMS := float64(uploadMetric.TotalLatency.Nanoseconds()) / 1e6
+			uploadEffectiveLatencyMS := float64(checkUploadIDEffectiveDuration.Nanoseconds()) / 1e6
+			effectivePercentage := calculatePercentage(uploadEffectiveLatencyMS, uploadTotalLatencyMS)
+			checkUploadIDExisStats["effectivePercentageOfUploadLatency"] = effectivePercentage
+		} else {
+			checkUploadIDExisStats["effectivePercentageOfUploadLatency"] = float64(0)
+		}
+
+		// 유효 시간 정보 추가
+		checkUploadIDExisStats["effectiveDurationMS"] = float64(checkUploadIDEffectiveDuration.Nanoseconds()) / 1e6
+		checkUploadIDExisStats["intervalCount"] = len(checkUploadIDIntervals)
+
+		// 파트별 백분율 계산 (기존 방식 유지)
+		if len(uploadMetric.Parts) > 0 {
+			partPercentages := make(map[int]float64)
+			avgUploadLatencyMS := checkUploadIDExisStats["averageMS"].(float64)
+
+			for partID, part := range uploadMetric.Parts {
+				partLatencyMS := float64(part.EachPartUploadLatency.Nanoseconds()) / 1e6
+				if partLatencyMS > 0 {
+					partPercentage := calculatePercentage(avgUploadLatencyMS, partLatencyMS)
+					partPercentages[partID] = partPercentage
+				} else {
+					partPercentages[partID] = 0
+				}
+			}
+
+			checkUploadIDExisStats["partPercentages"] = partPercentages
+		}
+
+		checkUploadIDDetails[uploadID] = checkUploadIDExisStats
+		totalEffectiveDuration += checkUploadIDEffectiveDuration
+	}
+
+	// 전체 유효 시간 계산 (모든 업로드의 시간 간격 병합)
+	globalEffectiveDuration := mergeTimeIntervals(allIntervals)
+
+	// 모든 업로드에 걸친 CheckUploadIDExists 통계 계산
+	checkUploadIDStats := calculateLatencyStats(checkUploadIDData)
+
+	// 기존 방식의 전체 업로드 대비 비율 계산 (단순 합산)
+	if checkUploadIDData.Count > 0 && totalData.Count > 0 {
+		totalCheckLatencyMS := float64(checkUploadIDData.TotalLatency.Nanoseconds()) / 1e6
+		totalUploadLatencyMS := float64(totalData.TotalLatency.Nanoseconds()) / 1e6
+		percentage := calculatePercentage(totalCheckLatencyMS, totalUploadLatencyMS)
+		checkUploadIDStats["percentageOfTotalLatency"] = percentage
+	} else {
+		checkUploadIDStats["percentageOfTotalLatency"] = float64(0)
+	}
+
+	// 개선된 방식의 전체 업로드 대비 비율 계산 (시간 간격 병합)
+	if totalData.Count > 0 {
+		totalUploadLatencyMS := float64(totalData.TotalLatency.Nanoseconds()) / 1e6
+		globalEffectiveLatencyMS := float64(globalEffectiveDuration.Nanoseconds()) / 1e6
+		effectivePercentage := calculatePercentage(globalEffectiveLatencyMS, totalUploadLatencyMS)
+		checkUploadIDStats["effectivePercentageOfTotalLatency"] = effectivePercentage
+	} else {
+		checkUploadIDStats["effectivePercentageOfTotalLatency"] = float64(0)
+	}
+
+	// 파트 업로드 대비 비율 계산 (기존 방식)
+	if checkUploadIDData.Count > 0 && partData.Count > 0 {
+		totalCheckLatencyMS := float64(checkUploadIDData.TotalLatency.Nanoseconds()) / 1e6
+		totalPartLatencyMS := float64(partData.TotalLatency.Nanoseconds()) / 1e6
+		percentage := calculatePercentage(totalCheckLatencyMS, totalPartLatencyMS)
+		checkUploadIDStats["percentageOfPartLatency"] = percentage
+	} else {
+		checkUploadIDStats["percentageOfPartLatency"] = float64(0)
+	}
+
+	// 개선된 방식의 파트 업로드 대비 비율 계산
+	if partData.Count > 0 {
+		totalPartLatencyMS := float64(partData.TotalLatency.Nanoseconds()) / 1e6
+		globalEffectiveLatencyMS := float64(globalEffectiveDuration.Nanoseconds()) / 1e6
+		effectivePercentage := calculatePercentage(globalEffectiveLatencyMS, totalPartLatencyMS)
+		checkUploadIDStats["effectivePercentageOfPartLatency"] = effectivePercentage
+	} else {
+		checkUploadIDStats["effectivePercentageOfPartLatency"] = float64(0)
+	}
+
+	// 추가 정보
+	checkUploadIDStats["globalEffectiveDurationMS"] = float64(globalEffectiveDuration.Nanoseconds()) / 1e6
+	checkUploadIDStats["totalEffectiveDurationMS"] = float64(totalEffectiveDuration.Nanoseconds()) / 1e6
+	checkUploadIDStats["totalIntervalCount"] = len(allIntervals)
+	checkUploadIDStats["checkUploadIDStats"] = checkUploadIDDetails
+
+	return checkUploadIDStats
 }
