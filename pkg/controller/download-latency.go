@@ -370,15 +370,17 @@ func (m *DownloadLatencyManager) calculateLatencyAggregation(latencies []time.Du
 func (m *DownloadLatencyManager) calculateErasureDecodeAggregation(erasureStats []map[string]any) map[string]any {
 	if len(erasureStats) == 0 {
 		return map[string]any{
-			"averageLatency":       "0ms",
-			"standardDeviation":    "0ms",
-			"confidenceInterval95": map[string]any{"lower": "0ms", "upper": "0ms"},
-			"totalParts":           0,
+			"averageLatency":         "0ms",
+			"standardDeviation":      "0ms",
+			"confidenceInterval95":   map[string]any{"lower": "0ms", "upper": "0ms"},
+			"totalParts":             0,
+			"averageTotalDecodeTime": "0ms",
 		}
 	}
 
-	// Extract average latencies from each file's erasure decode stats
+	// Extract average latencies and total decode times from each file's erasure decode stats
 	var averageLatencies []time.Duration
+	var totalDecodeTimes []time.Duration
 	totalParts := 0
 
 	for _, stats := range erasureStats {
@@ -392,16 +394,27 @@ func (m *DownloadLatencyManager) calculateErasureDecodeAggregation(erasureStats 
 				averageLatencies = append(averageLatencies, avgLatency)
 			}
 		}
+
+		// Parse total decode time string back to duration for aggregation
+		if totalDecodeTimeStr, ok := stats["totalDecodeTime"].(string); ok {
+			if totalDecodeTime := m.parseDurationFromString(totalDecodeTimeStr); totalDecodeTime > 0 {
+				totalDecodeTimes = append(totalDecodeTimes, totalDecodeTime)
+			}
+		}
 	}
 
 	// Calculate aggregation of average latencies
 	aggregation := m.calculateLatencyAggregation(averageLatencies)
 
+	// Calculate aggregation of total decode times
+	totalDecodeTimeAggregation := m.calculateLatencyAggregation(totalDecodeTimes)
+
 	return map[string]any{
-		"averageLatency":       aggregation["average"],
-		"standardDeviation":    aggregation["standardDeviation"],
-		"confidenceInterval95": aggregation["confidenceInterval95"],
-		"totalParts":           totalParts,
+		"averageLatency":         aggregation["average"],
+		"standardDeviation":      aggregation["standardDeviation"],
+		"confidenceInterval95":   aggregation["confidenceInterval95"],
+		"totalParts":             totalParts,
+		"averageTotalDecodeTime": totalDecodeTimeAggregation["average"],
 	}
 }
 
