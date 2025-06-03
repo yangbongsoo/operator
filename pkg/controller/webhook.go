@@ -57,7 +57,7 @@ func configureHTTPUpgradeServer(controller *Controller) *http.Server {
 	router.HandleFunc("/read-all-file-info-latency", controller.readAllFileInfoLatencyHandler).Methods(http.MethodPost)
 
 	// download
-	router.HandleFunc("/get-object-file-info-idc-latency", controller.getObjectFileInfoIDCLatencyHandler).Methods(http.MethodPost)
+	router.HandleFunc("/get-object-file-info-latency", controller.getObjectFileInfoLatencyHandler).Methods(http.MethodPost)
 
 	router.HandleFunc("/get-object-with-file-info-latency", controller.getObjectWithFileInfoLatencyHandler).Methods(http.MethodPost)
 

@@ -1622,8 +1622,8 @@ type CompleteMultipartUploadLatency struct {
 	CompleteTime time.Time `json:"completeTime"`
 }
 
-// MesureGetObjectFileInfoIDC is the struct for the measure get object file info IDC
-type MesureGetObjectFileInfoIDC struct {
+// MesureGetObjectFileInfo is the struct for the measure get object file info
+type MesureGetObjectFileInfo struct {
 	Bucket  string        `json:"bucket"`
 	Object  string        `json:"object"`
 	Caller  string        `json:"caller"`
@@ -1645,27 +1645,27 @@ type MesureErasureDecodeEachPart struct {
 	Latency   time.Duration `json:"latency"`
 }
 
-func (c *Controller) getObjectFileInfoIDCLatencyHandler(w http.ResponseWriter, r *http.Request) {
-	klog.Info("[YBS] /get-object-file-info-idc-latency endpoint called")
+func (c *Controller) getObjectFileInfoLatencyHandler(w http.ResponseWriter, r *http.Request) {
+	klog.Info("[YBS] /get-object-file-info-latency endpoint called")
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	var mesureGetObjectFileInfoIDC MesureGetObjectFileInfoIDC
-	if err := json.NewDecoder(r.Body).Decode(&mesureGetObjectFileInfoIDC); err != nil {
+	var mesureGetObjectFileInfo MesureGetObjectFileInfo
+	if err := json.NewDecoder(r.Body).Decode(&mesureGetObjectFileInfo); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	c.downloadLatencyManager.RecordGetObjectFileInfoIDCLatency(
-		mesureGetObjectFileInfoIDC.Bucket,
-		mesureGetObjectFileInfoIDC.Object,
-		mesureGetObjectFileInfoIDC.Caller,
-		mesureGetObjectFileInfoIDC.Latency,
+	c.downloadLatencyManager.RecordGetObjectFileInfoLatency(
+		mesureGetObjectFileInfo.Bucket,
+		mesureGetObjectFileInfo.Object,
+		mesureGetObjectFileInfo.Caller,
+		mesureGetObjectFileInfo.Latency,
 	)
-	klog.Infof("[YBS] Received get object file info IDC latency: bucket=%s, object=%s, caller=%s, latency=%v",
-		mesureGetObjectFileInfoIDC.Bucket, mesureGetObjectFileInfoIDC.Object, mesureGetObjectFileInfoIDC.Caller, mesureGetObjectFileInfoIDC.Latency)
+	klog.Infof("[YBS] Received get object file info latency: bucket=%s, object=%s, caller=%s, latency=%v",
+		mesureGetObjectFileInfo.Bucket, mesureGetObjectFileInfo.Object, mesureGetObjectFileInfo.Caller, mesureGetObjectFileInfo.Latency)
 	w.WriteHeader(http.StatusOK)
 }
 

@@ -34,22 +34,22 @@ func NewDownloadLatencyManager() *DownloadLatencyManager {
 	}
 }
 
-// RecordGetObjectFileInfoIDCLatency records the latency of getting object file info IDC
-func (m *DownloadLatencyManager) RecordGetObjectFileInfoIDCLatency(bucket, object, caller string, latency time.Duration) {
+// RecordGetObjectFileInfoLatency records the latency of getting object file info
+func (m *DownloadLatencyManager) RecordGetObjectFileInfoLatency(bucket, object, caller string, latency time.Duration) {
 	if bucket == "" || object == "" {
-		klog.Warningf("[YBS] Empty bucket or object provided for getObjectFileInfoIDC latency record, ignoring - Bucket: %s, Object: %s",
+		klog.Warningf("[YBS] Empty bucket or object provided for getObjectFileInfo latency record, ignoring - Bucket: %s, Object: %s",
 			bucket, object)
 		return
 	}
 
 	if caller == "" {
-		klog.Warningf("[YBS] Empty caller provided for getObjectFileInfoIDC latency record, ignoring - Bucket: %s, Object: %s",
+		klog.Warningf("[YBS] Empty caller provided for getObjectFileInfo latency record, ignoring - Bucket: %s, Object: %s",
 			bucket, object)
 		return
 	}
 
 	if latency <= 0 {
-		klog.Warningf("[YBS] Invalid latency value (%v) for getObjectFileInfoIDC - Bucket: %s, Object: %s, Caller: %s, ignoring",
+		klog.Warningf("[YBS] Invalid latency value (%v) for getObjectFileInfo - Bucket: %s, Object: %s, Caller: %s, ignoring",
 			latency, bucket, object, caller)
 		return
 	}
@@ -79,7 +79,7 @@ func (m *DownloadLatencyManager) RecordGetObjectFileInfoIDCLatency(bucket, objec
 		klog.Infof("[YBS] Recorded getObjectHandler latency - Bucket: %s, Object: %s, Latency: %v",
 			bucket, object, latency)
 	default:
-		klog.Warningf("[YBS] Unknown caller '%s' for getObjectFileInfoIDC - Bucket: %s, Object: %s, ignoring",
+		klog.Warningf("[YBS] Unknown caller '%s' for getObjectFileInfo - Bucket: %s, Object: %s, ignoring",
 			caller, bucket, object)
 	}
 }
