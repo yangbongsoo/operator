@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -200,11 +201,18 @@ func (m *DownloadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	if len(m.downloadSessions) == 0 {
+	// Filter out sessions with bucket names containing dots (e.g., .minio.sys)
+	var validSessions map[string]*DownloadSession = make(map[string]*DownloadSession)
+	for key, sess := range m.downloadSessions {
+		if !strings.Contains(sess.Bucket, ".") {
+			validSessions[key] = sess
+		}
+	}
+
+	if len(validSessions) == 0 {
 		return map[string]any{
 			"downloadLatency": map[string]any{
-				"bucket": "",
-				"object": "",
+				"bucketObject": "",
 				"metadata": map[string]any{
 					"headObjectHandler": map[string]any{"latency": "0ms"},
 					"getObjectHandler":  map[string]any{"latency": "0ms"},
@@ -225,27 +233,41 @@ func (m *DownloadLatencyManager) GetLatencyStats() (map[string]any, error) {
 						"totalDecodeTime": "0ms",
 					},
 				},
-				"summary": map[string]any{
-					"overheadTime": "0ms",
-				},
 			},
 		}, nil
 	}
 
-	// For now, return the first download session's stats
+	// Return the first valid download session's stats
 	// In the future, this could be enhanced to aggregate multiple sessions
 	var bucket, object string
 	var session *DownloadSession
-	for key, sess := range m.downloadSessions {
+	for key, sess := range validSessions {
 		bucket = sess.Bucket
 		object = sess.Object
 		session = sess
-		klog.V(4).Infof("[YBS] Processing download session: %s", key)
+		klog.V(4).Infof("[YBS] Processing download session: %s (filtered, excluding system buckets)", key)
 		break
 	}
 
 	return map[string]any{
-		"downloadLatency": m.buildDownloadLatencyStats(bucket, object, session),
+		"downloadLatency": map[string]any{
+			"bucketObject": bucket + "/" + object,
+			"metadata": map[string]any{
+				"headObjectHandler": map[string]any{
+					"latency": m.formatDuration(session.HeadObjectHandlerLatency),
+				},
+				"getObjectHandler": map[string]any{
+					"latency": m.formatDuration(session.GetObjectHandlerLatency),
+				},
+				"total": m.formatDuration(session.HeadObjectHandlerLatency + session.GetObjectHandlerLatency),
+			},
+			"dataTransfer": map[string]any{
+				"getObjectWithFileInfo": map[string]any{
+					"latency": m.formatDuration(session.GetObjectWithFileInfoLatency),
+				},
+				"erasureDecode": m.calculateErasureDecodeStats(session.ErasureDecodeLatencies),
+			},
+		},
 	}, nil
 }
 
@@ -258,47 +280,6 @@ func (m *DownloadLatencyManager) ClearAllMetrics() {
 	m.downloadSessions = make(map[string]*DownloadSession)
 
 	klog.Infof("[YBS] Cleared all download latency metrics - Sessions cleared: %d", sessionCount)
-}
-
-// buildDownloadLatencyStats builds the download latency stats for a session
-func (m *DownloadLatencyManager) buildDownloadLatencyStats(bucket, object string, session *DownloadSession) map[string]any {
-	// Calculate metadata section
-	metadataTotal := session.HeadObjectHandlerLatency + session.GetObjectHandlerLatency
-	metadata := map[string]any{
-		"headObjectHandler": map[string]any{
-			"latency": m.formatDuration(session.HeadObjectHandlerLatency),
-		},
-		"getObjectHandler": map[string]any{
-			"latency": m.formatDuration(session.GetObjectHandlerLatency),
-		},
-		"total": m.formatDuration(metadataTotal),
-	}
-
-	// Calculate erasure decode statistics
-	erasureDecodeStats := m.calculateErasureDecodeStats(session.ErasureDecodeLatencies)
-
-	// Calculate data transfer section
-	dataTransfer := map[string]any{
-		"getObjectWithFileInfo": map[string]any{
-			"latency": m.formatDuration(session.GetObjectWithFileInfoLatency),
-		},
-		"erasureDecode": erasureDecodeStats,
-	}
-
-	// Calculate summary section
-	totalDecodeTime := m.parseDurationFromString(erasureDecodeStats["totalDecodeTime"].(string))
-	overheadTime := metadataTotal + session.GetObjectWithFileInfoLatency + totalDecodeTime
-	summary := map[string]any{
-		"overheadTime": m.formatDuration(overheadTime),
-	}
-
-	return map[string]any{
-		"bucket":       bucket,
-		"object":       object,
-		"metadata":     metadata,
-		"dataTransfer": dataTransfer,
-		"summary":      summary,
-	}
 }
 
 // calculateErasureDecodeStats calculates statistics for erasure decode latencies
@@ -368,7 +349,7 @@ func (m *DownloadLatencyManager) calculateErasureDecodeStats(latencies []time.Du
 	}
 }
 
-// formatDuration formats a duration to a string with appropriate unit
+// formatDuration formats a duration to a string with ms unit
 func (m *DownloadLatencyManager) formatDuration(d time.Duration) string {
 	if d == 0 {
 		return "0ms"
@@ -379,17 +360,6 @@ func (m *DownloadLatencyManager) formatDuration(d time.Duration) string {
 		return "0ms"
 	}
 
-	if ms >= 1000 {
-		return fmt.Sprintf("%.0fs", ms/1000)
-	}
-
-	return fmt.Sprintf("%.0fms", ms)
-}
-
-// parseDurationFromString parses a duration string back to time.Duration
-func (m *DownloadLatencyManager) parseDurationFromString(s string) time.Duration {
-	if d, err := time.ParseDuration(s); err == nil {
-		return d
-	}
-	return 0
+	// Always return in ms unit with 3 decimal places for precision
+	return fmt.Sprintf("%.3fms", ms)
 }
