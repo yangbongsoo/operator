@@ -202,7 +202,7 @@ func (m *DownloadLatencyManager) GetLatencyStats() (map[string]any, error) {
 	defer m.mu.RUnlock()
 
 	// Filter out sessions with bucket names containing dots (e.g., .minio.sys)
-	var validSessions map[string]*DownloadSession = make(map[string]*DownloadSession)
+	validSessions := make(map[string]*DownloadSession)
 	for key, sess := range m.downloadSessions {
 		if !strings.Contains(sess.Bucket, ".") {
 			validSessions[key] = sess
