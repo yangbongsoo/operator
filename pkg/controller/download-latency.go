@@ -320,16 +320,16 @@ func (m *DownloadLatencyManager) calculateErasureDecodeStats(latencies []time.Du
 
 	// Calculate basic statistics
 	var total time.Duration
-	min := latencies[0]
-	max := latencies[0]
+	minLatency := latencies[0]
+	maxLatency := latencies[0]
 
 	for _, latency := range latencies {
 		total += latency
-		if latency < min {
-			min = latency
+		if latency < minLatency {
+			minLatency = latency
 		}
-		if latency > max {
-			max = latency
+		if latency > maxLatency {
+			maxLatency = latency
 		}
 	}
 
@@ -357,8 +357,8 @@ func (m *DownloadLatencyManager) calculateErasureDecodeStats(latencies []time.Du
 	return map[string]any{
 		"totalParts":        len(latencies),
 		"averageLatency":    m.formatDuration(average),
-		"minLatency":        m.formatDuration(min),
-		"maxLatency":        m.formatDuration(max),
+		"minLatency":        m.formatDuration(minLatency),
+		"maxLatency":        m.formatDuration(maxLatency),
 		"standardDeviation": m.formatDuration(standardDeviation),
 		"confidenceInterval95": map[string]any{
 			"lower": m.formatDuration(ci95Lower),
