@@ -664,6 +664,7 @@ func (m *UploadLatencyManager) calculateReadAllFileInfoStats(checkUploadIDStats 
 
 			// 전체 readAllFileInfo 통계에도 추가
 			readAllFileInfoData.TotalLatency += latency
+			readAllFileInfoData.SumSquaredMS += latencyMS * latencyMS
 			readAllFileInfoData.Count++
 
 			if readAllFileInfoData.IsFirst || latency < readAllFileInfoData.MinLatency {
@@ -846,6 +847,7 @@ func (m *UploadLatencyManager) calculateCheckUploadIDStatsWithIntervals(uploadMe
 
 			// 전체 checkUploadID 통계에도 추가
 			checkUploadIDData.TotalLatency += data.Latency
+			checkUploadIDData.SumSquaredMS += latencyMS * latencyMS
 			checkUploadIDData.Count++
 
 			if checkUploadIDData.IsFirst || data.Latency < checkUploadIDData.MinLatency {

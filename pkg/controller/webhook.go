@@ -55,6 +55,18 @@ func configureHTTPUpgradeServer(controller *Controller) *http.Server {
 	router.HandleFunc("/check-upload-id-exists-latency", controller.checkUploadIDExistsLatencyHandler).Methods(http.MethodPost)
 
 	router.HandleFunc("/read-all-file-info-latency", controller.readAllFileInfoLatencyHandler).Methods(http.MethodPost)
+
+	// download
+	router.HandleFunc("/get-object-file-info-idc-latency", controller.getObjectFileInfoIDCLatencyHandler).Methods(http.MethodPost)
+
+	router.HandleFunc("/get-object-with-file-info-latency", controller.getObjectWithFileInfoLatencyHandler).Methods(http.MethodPost)
+
+	router.HandleFunc("/erasure-decode-each-part-latency", controller.erasureDecodeEachPartLatencyHandler).Methods(http.MethodPost)
+
+	router.HandleFunc("/download-latency-stats", controller.getDownloadLatencyStatsHandler).Methods(http.MethodGet)
+
+	router.HandleFunc("/download-latency-clear-all", controller.clearAllDownloadMetricsHandler).Methods(http.MethodGet)
+
 	router.NotFoundHandler = http.NotFoundHandler()
 
 	s := &http.Server{

@@ -213,7 +213,8 @@ type Controller struct {
 
 	dynamicClient dynamic.Interface
 
-	uploadLatencyManager *UploadLatencyManager
+	uploadLatencyManager   *UploadLatencyManager
+	downloadLatencyManager *DownloadLatencyManager
 }
 
 // EventType is Event type to handle
@@ -297,6 +298,7 @@ func NewController(
 		policyBindingListerSynced: policyBindingInformer.Informer().HasSynced,
 		dynamicClient:             dynamicClient,
 		uploadLatencyManager:      NewUploadLatencyManager(),
+		downloadLatencyManager:    NewDownloadLatencyManager(),
 	}
 
 	// Initialize operator HTTP upgrade server handlers
@@ -1618,6 +1620,130 @@ type CompleteMultipartUploadLatency struct {
 	Bucket       string    `json:"bucket"`
 	Object       string    `json:"object"`
 	CompleteTime time.Time `json:"completeTime"`
+}
+
+// MesureGetObjectFileInfoIDC is the struct for the measure get object file info IDC
+type MesureGetObjectFileInfoIDC struct {
+	Bucket  string        `json:"bucket"`
+	Object  string        `json:"object"`
+	Caller  string        `json:"caller"`
+	Latency time.Duration `json:"latency"`
+}
+
+// MesureGetObjectWithFileInfo is the struct for the measure get object with file info
+type MesureGetObjectWithFileInfo struct {
+	Bucket  string        `json:"bucket"`
+	Object  string        `json:"object"`
+	Latency time.Duration `json:"latency"`
+}
+
+// MesureErasureDecodeEachPart is the struct for the measure erasure decode each part
+type MesureErasureDecodeEachPart struct {
+	Bucket    string        `json:"bucket"`
+	Object    string        `json:"object"`
+	PartIndex int           `json:"partIndex"`
+	Latency   time.Duration `json:"latency"`
+}
+
+func (c *Controller) getObjectFileInfoIDCLatencyHandler(w http.ResponseWriter, r *http.Request) {
+	klog.Info("[YBS] /get-object-file-info-idc-latency endpoint called")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var mesureGetObjectFileInfoIDC MesureGetObjectFileInfoIDC
+	if err := json.NewDecoder(r.Body).Decode(&mesureGetObjectFileInfoIDC); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	c.downloadLatencyManager.RecordGetObjectFileInfoIDCLatency(
+		mesureGetObjectFileInfoIDC.Bucket,
+		mesureGetObjectFileInfoIDC.Object,
+		mesureGetObjectFileInfoIDC.Caller,
+		mesureGetObjectFileInfoIDC.Latency,
+	)
+	klog.Infof("[YBS] Received get object file info IDC latency: bucket=%s, object=%s, caller=%s, latency=%v",
+		mesureGetObjectFileInfoIDC.Bucket, mesureGetObjectFileInfoIDC.Object, mesureGetObjectFileInfoIDC.Caller, mesureGetObjectFileInfoIDC.Latency)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (c *Controller) getObjectWithFileInfoLatencyHandler(w http.ResponseWriter, r *http.Request) {
+	klog.Info("[YBS] /get-object-with-file-info-latency endpoint called")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var mesureGetObjectWithFileInfo MesureGetObjectWithFileInfo
+	if err := json.NewDecoder(r.Body).Decode(&mesureGetObjectWithFileInfo); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	c.downloadLatencyManager.RecordGetObjectWithFileInfoLatency(
+		mesureGetObjectWithFileInfo.Bucket,
+		mesureGetObjectWithFileInfo.Object,
+		mesureGetObjectWithFileInfo.Latency,
+	)
+	klog.Infof("[YBS] Received get object with file info latency: bucket=%s, object=%s, latency=%v",
+		mesureGetObjectWithFileInfo.Bucket, mesureGetObjectWithFileInfo.Object, mesureGetObjectWithFileInfo.Latency)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (c *Controller) erasureDecodeEachPartLatencyHandler(w http.ResponseWriter, r *http.Request) {
+	klog.Info("[YBS] /erasure-decode-each-part-latency endpoint called")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var mesureErasureDecodeEachPart MesureErasureDecodeEachPart
+	if err := json.NewDecoder(r.Body).Decode(&mesureErasureDecodeEachPart); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	c.downloadLatencyManager.RecordErasureDecodeEachPartLatency(
+		mesureErasureDecodeEachPart.Bucket,
+		mesureErasureDecodeEachPart.Object,
+		mesureErasureDecodeEachPart.PartIndex,
+		mesureErasureDecodeEachPart.Latency,
+	)
+	klog.Infof("[YBS] Received erasure decode each part latency: bucket=%s, object=%s, partIndex=%d, latency=%v",
+		mesureErasureDecodeEachPart.Bucket, mesureErasureDecodeEachPart.Object, mesureErasureDecodeEachPart.PartIndex, mesureErasureDecodeEachPart.Latency)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (c *Controller) getDownloadLatencyStatsHandler(w http.ResponseWriter, r *http.Request) {
+	klog.Info("[YBS] /download-latency-stats endpoint called")
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	stats, err := c.downloadLatencyManager.GetLatencyStats()
+	if err != nil {
+		klog.Errorf("[YBS] Failed to get download latency stats: %v", err)
+		http.Error(w, "Failed to get download latency stats", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+func (c *Controller) clearAllDownloadMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	klog.Info("[YBS] /download-latency-clear-all endpoint called")
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	c.downloadLatencyManager.ClearAllMetrics()
+	klog.Info("[YBS] All download latency metrics cleared")
+	w.WriteHeader(http.StatusOK)
 }
 
 // ClearAllMetricsHandler clears all metrics
