@@ -466,6 +466,9 @@ func leaderRun(ctx context.Context, c *Controller, threadiness int, stopCh <-cha
 	go c.recurrentTenantStatusMonitor(stopCh)
 	go c.StartPodInformer(stopCh)
 
+	// Start IDC Failure Manager for automatic nodeAffinity management
+	go c.startIDCFailureManager(ctx, stopCh)
+
 	// 2) we need to make sure we have STS API certificates (if enabled)
 	if IsSTSEnabled() {
 		go func() {
