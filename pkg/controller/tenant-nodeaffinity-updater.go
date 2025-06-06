@@ -129,32 +129,28 @@ func (m *IDCFailureManager) initializePoolAffinity(pool *miniov2.Pool) {
 func (m *IDCFailureManager) addNotInConstraint(pool *miniov2.Pool, idcs []string) bool {
 	nodeSelector := pool.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
 
-	// Find existing zone constraint with NotIn operator
-	for i, term := range nodeSelector.NodeSelectorTerms {
-		for j, expr := range term.MatchExpressions {
+	// First, try to find and update existing zone NotIn constraint
+	for i := range nodeSelector.NodeSelectorTerms {
+		term := &nodeSelector.NodeSelectorTerms[i]
+		for j := range term.MatchExpressions {
+			expr := &term.MatchExpressions[j]
 			if expr.Key == "topology.kubernetes.io/zone" && expr.Operator == corev1.NodeSelectorOpNotIn {
-				// Merge with existing NotIn values, avoiding duplicates
+				// Found existing NotIn constraint, merge values
 				existingValues := make(map[string]bool)
 				for _, val := range expr.Values {
 					existingValues[val] = true
 				}
 
-				var newValues []string
 				changed := false
-
-				// Keep existing values
-				newValues = append(newValues, expr.Values...)
-
 				// Add new IDCs if not already present
 				for _, idc := range idcs {
 					if !existingValues[idc] {
-						newValues = append(newValues, idc)
+						expr.Values = append(expr.Values, idc)
 						changed = true
 					}
 				}
 
 				if changed {
-					nodeSelector.NodeSelectorTerms[i].MatchExpressions[j].Values = newValues
 					klog.V(4).Infof("[YBS] Updated existing NotIn constraint with IDCs: %v", idcs)
 				}
 				return changed
@@ -162,69 +158,85 @@ func (m *IDCFailureManager) addNotInConstraint(pool *miniov2.Pool, idcs []string
 		}
 	}
 
-	// No existing NotIn constraint found, create new one
-	newTerm := corev1.NodeSelectorTerm{
-		MatchExpressions: []corev1.NodeSelectorRequirement{
-			{
-				Key:      "topology.kubernetes.io/zone",
-				Operator: corev1.NodeSelectorOpNotIn,
-				Values:   idcs,
+	// No existing NotIn constraint found, add to first term or create new term
+	if len(nodeSelector.NodeSelectorTerms) > 0 {
+		// Add to the first term
+		term := &nodeSelector.NodeSelectorTerms[0]
+		term.MatchExpressions = append(term.MatchExpressions, corev1.NodeSelectorRequirement{
+			Key:      "topology.kubernetes.io/zone",
+			Operator: corev1.NodeSelectorOpNotIn,
+			Values:   idcs,
+		})
+		klog.V(4).Infof("[YBS] Added NotIn constraint to existing term for IDCs: %v", idcs)
+	} else {
+		// Create new term
+		newTerm := corev1.NodeSelectorTerm{
+			MatchExpressions: []corev1.NodeSelectorRequirement{
+				{
+					Key:      "topology.kubernetes.io/zone",
+					Operator: corev1.NodeSelectorOpNotIn,
+					Values:   idcs,
+				},
 			},
-		},
+		}
+		nodeSelector.NodeSelectorTerms = append(nodeSelector.NodeSelectorTerms, newTerm)
+		klog.V(4).Infof("[YBS] Created new term with NotIn constraint for IDCs: %v", idcs)
 	}
-	nodeSelector.NodeSelectorTerms = append(nodeSelector.NodeSelectorTerms, newTerm)
-	klog.V(4).Infof("[YBS] Added new NotIn constraint for IDCs: %v", idcs)
 	return true
 }
 
 // removeNotInConstraint removes NotIn constraint for specified IDCs
 func (m *IDCFailureManager) removeNotInConstraint(pool *miniov2.Pool, idcs []string) bool {
 	nodeSelector := pool.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	changed := false
 
-	for i, term := range nodeSelector.NodeSelectorTerms {
-		for j, expr := range term.MatchExpressions {
+	// Create map for faster lookup
+	idcsToRemove := make(map[string]bool)
+	for _, idc := range idcs {
+		idcsToRemove[idc] = true
+	}
+
+	// Use reverse iteration to safely remove elements
+	for i := len(nodeSelector.NodeSelectorTerms) - 1; i >= 0; i-- {
+		term := &nodeSelector.NodeSelectorTerms[i]
+
+		// Use reverse iteration for expressions too
+		for j := len(term.MatchExpressions) - 1; j >= 0; j-- {
+			expr := &term.MatchExpressions[j]
 			if expr.Key == "topology.kubernetes.io/zone" && expr.Operator == corev1.NodeSelectorOpNotIn {
 				// Remove specified IDCs from NotIn values
 				var newValues []string
-				changed := false
+				exprChanged := false
 
 				for _, val := range expr.Values {
-					shouldRemove := false
-					for _, idc := range idcs {
-						if val == idc {
-							shouldRemove = true
-							changed = true
-							break
-						}
-					}
-					if !shouldRemove {
+					if !idcsToRemove[val] {
 						newValues = append(newValues, val)
+					} else {
+						exprChanged = true
 					}
 				}
 
-				if changed {
+				if exprChanged {
 					if len(newValues) == 0 {
 						// Remove the entire expression if no values left
-						nodeSelector.NodeSelectorTerms[i].MatchExpressions = append(
-							term.MatchExpressions[:j],
-							term.MatchExpressions[j+1:]...)
-
-						// Remove the entire term if no expressions left
-						if len(nodeSelector.NodeSelectorTerms[i].MatchExpressions) == 0 {
-							nodeSelector.NodeSelectorTerms = append(
-								nodeSelector.NodeSelectorTerms[:i],
-								nodeSelector.NodeSelectorTerms[i+1:]...)
-						}
-						klog.V(4).Infof("[YBS] Removed entire NotIn constraint for IDCs: %v", idcs)
+						term.MatchExpressions = append(term.MatchExpressions[:j], term.MatchExpressions[j+1:]...)
+						klog.V(4).Infof("[YBS] Removed entire NotIn expression for IDCs: %v", idcs)
 					} else {
-						nodeSelector.NodeSelectorTerms[i].MatchExpressions[j].Values = newValues
+						expr.Values = newValues
 						klog.V(4).Infof("[YBS] Removed IDCs from NotIn constraint: %v", idcs)
 					}
-					return true
+					changed = true
 				}
 			}
 		}
+
+		// Remove the entire term if no expressions left
+		if len(term.MatchExpressions) == 0 {
+			nodeSelector.NodeSelectorTerms = append(nodeSelector.NodeSelectorTerms[:i], nodeSelector.NodeSelectorTerms[i+1:]...)
+			klog.V(4).Infof("[YBS] Removed empty NodeSelectorTerm")
+			changed = true
+		}
 	}
 
-	return false
+	return changed
 }

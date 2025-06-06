@@ -79,6 +79,11 @@ func (m *IDCFailureManager) Start(ctx context.Context) error {
 
 	// Add event handlers
 	m.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			// On first add, consider all IDCs as "newly created" with 0% failure rate
+			klog.V(4).Info("[YBS] IDC topology created, performing initial check")
+			m.handleIDCTopologyUpdate(ctx, nil, obj)
+		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			m.handleIDCTopologyUpdate(ctx, oldObj, newObj)
 		},
@@ -107,10 +112,21 @@ func (m *IDCFailureManager) Stop() {
 func (m *IDCFailureManager) handleIDCTopologyUpdate(ctx context.Context, oldObj, newObj interface{}) {
 	klog.V(4).Info("[YBS] IDC topology update detected")
 
-	oldTopology, err := m.convertToIDCTopology(oldObj)
-	if err != nil {
-		klog.Errorf("[YBS] Failed to convert old topology: %v", err)
-		return
+	var oldTopology *topologyv1alpha1.IDCTopology
+	var err error
+
+	// Handle case where oldObj is nil (first creation)
+	if oldObj != nil {
+		oldTopology, err = m.convertToIDCTopology(oldObj)
+		if err != nil {
+			klog.Errorf("[YBS] Failed to convert old topology: %v", err)
+			return
+		}
+	} else {
+		// Create empty topology for comparison on first add
+		oldTopology = &topologyv1alpha1.IDCTopology{
+			Spec: topologyv1alpha1.IDCTopologySpec{IDCs: []topologyv1alpha1.IDC{}},
+		}
 	}
 
 	newTopology, err := m.convertToIDCTopology(newObj)
